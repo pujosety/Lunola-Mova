@@ -50,9 +50,12 @@ pub use platform::{ExportPublisher, FilePicker, install_export_publisher, instal
 mod panes;
 mod prefs;
 mod presets;
+mod ripple_trim;
 mod source;
 mod studio;
 mod sysinfo;
+mod timeline_av;
+mod timeline_cursor;
 /// Native Wayland file drops, which winit does not report; see the module.
 #[cfg(target_os = "linux")]
 mod wayland_drop;
@@ -564,6 +567,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         };
         if let Dock::Leaf(held) = state.dock.at_mut(&path) {
             *held = kind;
+            state.schedule_workspace_save();
         }
     }));
     editor.on_dock_dropped(on_dock!(|state, from: i32, onto: i32, side: DockSide| {
@@ -584,6 +588,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                     *held = kind;
                 }
             }
+            state.schedule_workspace_save();
             return;
         }
         let (Some(onto_path), Some(from_path)) =
@@ -593,6 +598,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         };
         state.dock.split_leaf(&onto_path, taken, side);
         state.dock.remove_leaf(&from_path);
+        state.schedule_workspace_save();
     }));
     editor.on_dock_add(on_dock!(|state, kind: PaneKind| {
         let seats = state.dock_layout().seats;
@@ -613,12 +619,14 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             return;
         };
         state.dock.split_leaf(&path, kind, side);
+        state.schedule_workspace_save();
     }));
     editor.on_dock_remove(on_dock!(|state, seat: i32| {
         let Some(path) = state.dock.leaf_path(seat.max(0) as usize) else {
             return;
         };
         state.dock.remove_leaf(&path);
+        state.schedule_workspace_save();
     }));
     editor.on_divider_pressed(on_dock!(|state, index: i32| {
         let index = index.max(0) as usize;
@@ -662,6 +670,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             1.0 - side(second_narrow) / extent,
         );
         *ratio = (from + delta / extent).clamp(low, high.max(low));
+        state.schedule_workspace_save();
     }));
 
     // ── the bin ──
@@ -671,9 +680,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_media_sort_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Media(MediaMsg::SortChanged(index)));
     }));
-    editor.on_media_select(on_window!(|state, row: i32, additive: bool| {
-        state.handle(Msg::Media(MediaMsg::Select { row, additive }));
-    }));
+    editor.on_media_select(on_window!(
+        |state, row: i32, additive: bool, range: bool| {
+            state.handle(Msg::Media(MediaMsg::Select {
+                row,
+                additive,
+                range,
+            }));
+        }
+    ));
     editor.on_media_band_selected(on_window!(
         |state,
          columns: i32,
@@ -1229,6 +1244,13 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_cutout_clear(on_window!(|state| {
         state.cutout_clear();
     }));
+    editor.on_cutout_background_mode(on_window!(|state, mode: i32| {
+        state.cutout_background_mode(mode);
+    }));
+
+    editor.on_cutout_background_color(on_window!(|state, value: slint::Color| {
+        state.cutout_background_color(value);
+    }));
     editor.on_clip_enhance_set(on_window!(|state, on: bool| {
         state.clip_enhance_set(on);
     }));
@@ -1446,6 +1468,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     app.on_export_name_edited(on_window!(|state, name: SharedString| {
         state.handle(Msg::Export(ExportMsg::NameEdited(name.to_string())));
+    }));
+    app.on_export_format_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Export(ExportMsg::FormatChanged(index)));
     }));
     app.on_export_resolution_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Export(ExportMsg::ResolutionChanged(index)));
@@ -1699,6 +1724,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                         "sort-kind" => state.handle(Msg::Media(MediaMsg::SortChanged(2))),
                         "zoom-in" => state.handle(Msg::Timeline(TimelineMsg::ZoomIn)),
                         "zoom-out" => state.handle(Msg::Timeline(TimelineMsg::ZoomOut)),
+                        "reset-workspace-layout" => state.reset_workspace_layout(),
                         "start" => {
                             state.pause();
                             state.seek(0.0);

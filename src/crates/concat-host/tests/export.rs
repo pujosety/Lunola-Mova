@@ -576,6 +576,7 @@ impl Studio {
                 .join(format!("{}.mp4", label.replace(' ', "-")))
                 .to_string_lossy()
                 .into_owned(),
+            format: export::ExportFormat::Movie,
             crf: 18,
             preset: "ultrafast".to_owned(),
             codec: VideoCodec::H264,
@@ -725,6 +726,7 @@ fn an_export_draws_on_a_lent_compositor() {
             .join("lent.mp4")
             .to_string_lossy()
             .into_owned(),
+        format: export::ExportFormat::Movie,
         crf: 18,
         preset: "ultrafast".to_owned(),
         codec: VideoCodec::H264,
@@ -1107,6 +1109,7 @@ fn an_hlg_timeline_exports_as_hdr_or_sdr() {
                 .join(format!("out-{hdr}.mp4"))
                 .to_string_lossy()
                 .into_owned(),
+            format: export::ExportFormat::Movie,
             crf: 12,
             preset: "ultrafast".to_owned(),
             codec,

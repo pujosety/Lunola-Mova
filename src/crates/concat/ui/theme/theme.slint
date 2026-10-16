@@ -52,9 +52,9 @@ export global Theme {
     /// Settings > Appearance picks it (lib.rs, `on_settings_accent_changed`)
     /// the way it picks `dark`, and it retones the window the same way.
     /// Remembered by name rather than by number, so a list that grows or
-    /// reorders keeps everyone's choice; 0 is Lime, the default. One past
+    /// reorders keeps everyone's choice; 2 is Violet, the Lunola default. One past
     /// the last name is the custom colour, `accent-custom`.
-    in-out property <int> accent-choice: 0;
+    in-out property <int> accent-choice: 2;
     /// A colour picked by hand in place of any on the list. Read only while
     /// `accent-choice` points past the list, and one colour under both
     /// palettes: whoever picked it picked what they see, and the three
@@ -127,13 +127,13 @@ export global Theme {
     // ── shape ────────────────────────────────────────────────────────────
     //
     // radii
-    out property <length> r-xs: 3px;
-    out property <length> r-sm: 5px;
-    out property <length> r: 7px;
-    out property <length> r-lg: 12px;
+    out property <length> r-xs: 4px;
+    out property <length> r-sm: 6px;
+    out property <length> r: 8px;
+    out property <length> r-lg: 14px;
     /// The dialog sheet, and nothing smaller. A modal is the largest rounded
     /// thing in the window and wants a corner to match.
-    out property <length> r-xl: 16px;
+    out property <length> r-xl: 18px;
 
     // metrics
     out property <length> h: 28px;        // standard control height
@@ -142,6 +142,11 @@ export global Theme {
     out property <length> label-w: 62px;
 
     // ── surfaces ─────────────────────────────────────────────────────────
+    // Product artwork is immutable. The dark-lettered wordmark keeps a light
+    // backing even in dark mode; splash letterboxing matches its own ground.
+    out property <color> brand-paper: #ffffff;
+    out property <color> brand-art-ground: #141020;
+    out property <color> brand-purple: #b65cf2;
     out property <color> panel: dark ? Dark.panel : Light.panel;
     out property <color> raised: dark ? Dark.raised : Light.raised;
     out property <color> well: dark ? Dark.well : Light.well;

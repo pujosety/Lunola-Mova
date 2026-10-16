@@ -10,17 +10,17 @@
 #    the folder or one Windows itself provides. A DLL that only happens to
 #    be on this machine - the Visual C++ runtime, DirectML, ONNX Runtime,
 #    which Windows 11 carries a copy of its own - counts as missing.
-# 2. `concat.exe --version` exits 0 with PATH cut down to Windows' own
+# 2. `lunola-mova.exe --version` exits 0 with PATH cut down to Windows' own
 #    folders, so every DLL comes from the folder or from System32 - as on
 #    a machine with nothing else installed. It touches no GPU: it proves
 #    the program and every DLL it loads at start load and initialise.
-# 3. `concat.exe --smoke` exits 0 the same way: the start-up runs through
+# 3. `lunola-mova.exe --smoke` exits 0 the same way: the start-up runs through
 #    the first frame of the window, then the program leaves.
 # 4. With -Sde, `--version` again under Intel's emulator posing as an Ivy
 #    Bridge (AVX, nothing newer), which stops the program at the first
 #    instruction that chip does not have. x86_64 only.
 #
-# concat.exe is a GUI program: it has no console, so it is judged by its
+# lunola-mova.exe is a GUI program: it has no console, so it is judged by its
 # exit code and not by what it prints. Windows' error dialogs are turned
 # off for the programs this starts, so a missing DLL is an exit code here
 # rather than a dialog waiting for a click on a runner nobody is watching.
@@ -32,7 +32,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $bundle = (Resolve-Path $Bundle).Path
-$exe = Join-Path $bundle "concat.exe"
+$exe = Join-Path $bundle "lunola-mova.exe"
 if (-not (Test-Path $exe)) { throw "$exe is not there" }
 
 function Say($text) { Write-Host ""; Write-Host "== $text" }
@@ -142,20 +142,20 @@ Write-Host "  every import resolves to the folder or to Windows"
 $bare = @($system, $env:SystemRoot, (Join-Path $system "Wbem"), (Join-Path $system "WindowsPowerShell\v1.0")) -join ";"
 
 # ── 2. --version ───────────────────────────────────────────────────────
-Say "concat.exe --version, with only Windows on the path"
-Expect-Ok "concat.exe --version" $exe @("--version") $bare 60
+Say "lunola-mova.exe --version, with only Windows on the path"
+Expect-Ok "lunola-mova.exe --version" $exe @("--version") $bare 60
 
 # ── 3. --smoke ─────────────────────────────────────────────────────────
-Say "concat.exe --smoke, with only Windows on the path"
-Expect-Ok "concat.exe --smoke" $exe @("--smoke") $bare 180
+Say "lunola-mova.exe --smoke, with only Windows on the path"
+Expect-Ok "lunola-mova.exe --smoke" $exe @("--smoke") $bare 180
 
 # ── 4. On an emulated Ivy Bridge ───────────────────────────────────────
 if ($Sde) {
-  Say "concat.exe --version on an emulated Ivy Bridge"
+  Say "lunola-mova.exe --version on an emulated Ivy Bridge"
   $sdeExe = (Resolve-Path $Sde).Path
   # The emulator's own folder too: it loads its pieces from beside itself.
   $path = (Split-Path $sdeExe) + ";" + $bare
-  Expect-Ok "concat.exe --version under SDE -ivb" $sdeExe @("-ivb", "--", $exe, "--version") $path 600
+  Expect-Ok "lunola-mova.exe --version under SDE -ivb" $sdeExe @("-ivb", "--", $exe, "--version") $path 600
 }
 
 Say "ok"

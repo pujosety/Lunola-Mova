@@ -6,7 +6,7 @@
 #
 # Build first (`cargo build -p concat --target aarch64-apple-ios --release`
 # under `eval "$(scripts/mobile-env.sh aarch64-apple-ios)"`), then this
-# lays out target/<target>/<profile>/Concat.app: the binary, an Info.plist,
+# lays out target/<target>/<profile>/Lunola Mova.app: the binary, an Info.plist,
 # the icon, and the sherpa-onnx framework the binary loads, with the load
 # path rewritten to the bundle. The bundle is ad-hoc signed, which is what
 # a simulator accepts; a phone needs a developer identity and provisioning
@@ -20,28 +20,28 @@ root=$(cd "$workspace/.." && pwd)
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$workspace/Cargo.toml" | head -1)
 ios_min=${IPHONEOS_DEPLOYMENT_TARGET:-15.0}
 
-binary=$workspace/target/$target/$profile/concat
+binary=$workspace/target/$target/$profile/lunola-mova
 [ -f "$binary" ] || { echo "no binary at $binary: build first" >&2; exit 1; }
 framework=$(find "$workspace/vendor/sherpa-onnx/ios" -maxdepth 2 -name '*.xcframework' | head -1)
 [ -n "$framework" ] || { echo "no sherpa-onnx xcframework: run scripts/sherpa-mobile.sh $target" >&2; exit 1; }
 slice=ios-arm64
 [ "$target" = aarch64-apple-ios-sim ] && slice=ios-arm64_x86_64-simulator
 
-app=$workspace/target/$target/$profile/Concat.app
+app="$workspace/target/$target/$profile/Lunola Mova.app"
 rm -rf "$app"
 mkdir -p "$app/Frameworks"
-cp "$binary" "$app/Concat"
+cp "$binary" "$app/lunola-mova"
 cp -R "$framework/$slice/SherpaOnnxC.framework" "$app/Frameworks/"
-cp "$root/assets/icons/concat_logo_512.png" "$app/AppIcon.png" 2>/dev/null || true
+cp "$root/assets/lunola/ios/"*.png "$app/"
 
 # The binary was linked against the dylib by the name the linker saw in
 # vendor/; in the bundle it lives in Frameworks/ under the framework's
 # own name.
-old=$(otool -L "$app/Concat" | awk '/sherpa-onnx-c-api|SherpaOnnxC/ {print $1; exit}')
+old=$(otool -L "$app/lunola-mova" | awk '/sherpa-onnx-c-api|SherpaOnnxC/ {print $1; exit}')
 if [ -n "$old" ]; then
-  install_name_tool -change "$old" "@rpath/SherpaOnnxC.framework/SherpaOnnxC" "$app/Concat"
+  install_name_tool -change "$old" "@rpath/SherpaOnnxC.framework/SherpaOnnxC" "$app/lunola-mova"
 fi
-install_name_tool -add_rpath "@executable_path/Frameworks" "$app/Concat" 2>/dev/null || true
+install_name_tool -add_rpath "@executable_path/Frameworks" "$app/lunola-mova" 2>/dev/null || true
 
 platform=iPhoneOS
 [ "$target" = aarch64-apple-ios-sim ] && platform=iPhoneSimulator
@@ -56,12 +56,20 @@ cat > "$app/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Concat</string>
-  <key>CFBundleDisplayName</key><string>Concat</string>
-  <key>CFBundleIdentifier</key><string>app.concat.editor</string>
+  <key>CFBundleName</key><string>Lunola Mova</string>
+  <key>CFBundleDisplayName</key><string>Lunola Mova</string>
+  <key>CFBundleIdentifier</key><string>app.lunola.mova</string>
   <key>CFBundleVersion</key><string>${version}</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
-  <key>CFBundleExecutable</key><string>Concat</string>
+  <key>CFBundleExecutable</key><string>lunola-mova</string>
+  <key>CFBundleIcons</key>
+  <dict><key>CFBundlePrimaryIcon</key><dict>
+    <key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array>
+  </dict></dict>
+  <key>CFBundleIcons~ipad</key>
+  <dict><key>CFBundlePrimaryIcon</key><dict>
+    <key>CFBundleIconFiles</key><array><string>AppIcon76x76</string><string>AppIcon83.5x83.5</string></array>
+  </dict></dict>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleSupportedPlatforms</key><array><string>${platform}</string></array>
   <key>MinimumOSVersion</key><string>${ios_min}</string>
@@ -90,8 +98,8 @@ cat > "$app/Info.plist" <<PLIST
   </dict>
   <key>CADisableMinimumFrameDurationOnPhone</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
-  <key>NSPhotoLibraryUsageDescription</key><string>Concat imports the clips you pick.</string>
-  <key>NSMicrophoneUsageDescription</key><string>Concat records voice-over.</string>
+  <key>NSPhotoLibraryUsageDescription</key><string>Lunola Mova imports the clips you pick.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Lunola Mova records voice-over.</string>
   <key>NSHumanReadableCopyright</key><string>AGPL-3.0-or-later. See THIRD_PARTY_NOTICES.md.</string>
 </dict>
 </plist>

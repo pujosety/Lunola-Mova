@@ -6,7 +6,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: concat [--project <PROJECT_DIRECTORY> | --version | --smoke]";
+const USAGE: &str = "usage: lunola-mova [--project <PROJECT_DIRECTORY> | --version | --smoke]";
 
 /// What one run of the binary was asked to do.
 #[derive(Debug, PartialEq, Eq)]
@@ -54,6 +54,12 @@ mod tests {
 
     fn parse_strs(args: &[&str]) -> Result<Launch, String> {
         parse(args.iter().map(|arg| OsString::from(*arg)))
+    }
+
+    #[test]
+    fn usage_names_the_fork_launcher() {
+        let error = parse_strs(&["--unknown"]).unwrap_err();
+        assert!(error.starts_with("usage: lunola-mova "), "{error}");
     }
 
     #[test]

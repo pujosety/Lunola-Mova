@@ -29,7 +29,7 @@ set -euo pipefail
 since="$1"
 until="$2"
 version="$3"
-title="Concat $version"
+title="Lunola Mova $version"
 
 # A conventional-commit type, with its optional (scope) and breaking `!`.
 type='^[a-z0-9]+(\([^)]*\))?!?: '
@@ -78,12 +78,12 @@ fi
 cat <<'MD'
 ### Download
 
-A self-contained build for every platform Concat ships on.
+A self-contained build for every platform in the Lunola Mova target matrix (only reviewed artifacts may be published).
 
 | | Apple silicon | Intel / x86_64 | arm64 |
 |---|---|---|---|
 | macOS | `macos-arm64.dmg` | `macos-x86_64.dmg` | |
-| Windows | | `windows-x86_64-setup.exe`, `.msi` | `windows-aarch64-setup.exe`, `.msi` |
+| Windows | | `windows-x64.exe`, `.msi` | Installer pending ARM64 review; native build/smoke target retained |
 | Linux | | `linux-x86_64.deb`, `.rpm`, `x86_64.AppImage` | `linux-aarch64.deb`, `.rpm`, `aarch64.AppImage` |
 | Android | | | `android-arm64.apk` |
 | iOS / iPadOS | | | `ios-arm64.ipa` |

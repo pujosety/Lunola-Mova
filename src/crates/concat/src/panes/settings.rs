@@ -444,6 +444,12 @@ impl SettingsPane {
     /// Asks GitHub for the releases on a worker; the answer comes back as
     /// [`SettingsMsg::UpdatesFetched`].
     fn check_updates(&mut self) {
+        if updates::update_policy().is_err() {
+            self.checking = false;
+            self.releases.clear();
+            self.update_status = t("settings.updatesDisabled");
+            return;
+        }
         if self.checking {
             return;
         }
@@ -459,6 +465,10 @@ impl SettingsPane {
     /// download reports as [`SettingsMsg::InstallProgress`] and the whole
     /// ends as [`SettingsMsg::InstallFinished`].
     fn install_version(&mut self, studio: &mut Studio) {
+        if updates::update_policy().is_err() {
+            studio.notify(&t("settings.updatesDisabled"), true);
+            return;
+        }
         if self.install.is_some() {
             return;
         }
@@ -783,7 +793,11 @@ impl SettingsPane {
                 .into()
             },
             version: env!("CARGO_PKG_VERSION").into(),
-            update_status: self.update_status.as_str().into(),
+            update_status: if updates::update_policy().is_err() {
+                t("settings.updatesDisabled").into()
+            } else {
+                self.update_status.as_str().into()
+            },
             checking: self.checking,
             version_choice: self.version_choice as i32,
             installing: self.install.is_some(),
@@ -807,14 +821,19 @@ impl SettingsPane {
                 None => String::new(),
             }
             .into(),
-            can_install: self.install.is_none()
+            can_install: updates::update_policy().is_ok()
+                && self.install.is_none()
                 && !self.releases.is_empty()
                 && updates::installed_as().is_ok(),
-            install_note: updates::installed_as()
-                .err()
-                .map(fixed_note)
-                .unwrap_or_default()
-                .into(),
+            install_note: if updates::update_policy().is_err() {
+                t("settings.updatesDisabled")
+            } else {
+                updates::installed_as()
+                    .err()
+                    .map(fixed_note)
+                    .unwrap_or_default()
+            }
+            .into(),
         }
     }
 }

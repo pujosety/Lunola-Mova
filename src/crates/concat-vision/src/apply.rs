@@ -109,6 +109,143 @@ pub fn cut(frame: &mut Frame, mask: &Mask, mapping: &Mapping) {
     });
 }
 
+/// Blurs the background while keeping the foreground sharp.
+/// `radius` is in source mask pixels, as a fraction of picture width.
+/// The frame keeps its alpha; only the background pixels are softened.
+pub fn cut_blur(frame: &mut Frame, mask: &Mask, mapping: &Mapping, radius: f32) {
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let radius = (radius * width as f32).round().max(0.0) as usize;
+    if radius == 0 {
+        return;
+    }
+    // Blur the whole frame, then mix: foreground where mask=1, blurred where mask=0
+    let mut blurred = frame.clone();
+    blur_frame(&mut blurred, radius);
+    let pixels = frame.pixels_mut();
+    let blurred_pixels = blurred.pixels();
+    let row_bytes = width * BYTES_PER_PIXEL;
+    for (y, row) in pixels.chunks_exact_mut(row_bytes).enumerate() {
+        let fy = (y as f32 + 0.5) / height as f32;
+        for (x, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+            let fx = (x as f32 + 0.5) / width as f32;
+            let (u, v) = mapping.source_of(fx, fy);
+            let keep = mask.sample(u, v);
+            if keep < 1.0 {
+                let idx = (y * width + x) * BYTES_PER_PIXEL;
+                for c in 0..3 {
+                    pixel[c] = (f32::from(pixel[c]) * keep
+                        + f32::from(blurred_pixels[idx + c]) * (1.0 - keep)
+                        + 0.5) as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Replaces the background with a solid colour.
+/// The frame keeps its alpha; only the background pixels are replaced.
+pub fn cut_replace(frame: &mut Frame, mask: &Mask, mapping: &Mapping, colour: [u8; 3]) {
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let pixels = frame.pixels_mut();
+    let row_bytes = width * BYTES_PER_PIXEL;
+    for (y, row) in pixels.chunks_exact_mut(row_bytes).enumerate() {
+        let fy = (y as f32 + 0.5) / height as f32;
+        for (x, pixel) in row.chunks_exact_mut(BYTES_PER_PIXEL).enumerate() {
+            let fx = (x as f32 + 0.5) / width as f32;
+            let (u, v) = mapping.source_of(fx, fy);
+            let keep = mask.sample(u, v);
+            if keep < 1.0 {
+                for c in 0..3 {
+                    pixel[c] = (f32::from(pixel[c]) * keep
+                        + f32::from(colour[c]) * (1.0 - keep)
+                        + 0.5) as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Box blur for a frame, in place. Three passes approximate a gaussian.
+fn blur_frame(frame: &mut Frame, radius: usize) {
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    if width == 0 || height == 0 || radius == 0 {
+        return;
+    }
+    let mut temp = frame.clone();
+    for _ in 0..3 {
+        blur_rows(frame, &mut temp, width, height, radius);
+        blur_cols(&mut temp, frame, width, height, radius);
+    }
+}
+
+fn blur_rows(source: &mut Frame, out: &mut Frame, width: usize, height: usize, radius: usize) {
+    let src = source.pixels();
+    let dst = out.pixels_mut();
+    let row_bytes = width * BYTES_PER_PIXEL;
+    let window = (2 * radius + 1) as u32;
+    for y in 0..height {
+        let row_start = y * row_bytes;
+        let mut sums = [0u32; 3];
+        for offset in 0..window as usize {
+            let x = (offset as isize - radius as isize).clamp(0, width as isize - 1) as usize;
+            let idx = row_start + x * BYTES_PER_PIXEL;
+            for c in 0..3 { sums[c] += u32::from(src[idx + c]); }
+        }
+        for x in 0..width {
+            let idx = row_start + x * BYTES_PER_PIXEL;
+            for c in 0..3 { dst[idx + c] = (sums[c] / window) as u8; }
+            if x + 1 < width {
+                let old_x = (x as isize - radius as isize).clamp(0, width as isize - 1) as usize;
+                let new_x = (x as isize + radius as isize + 1).clamp(0, width as isize - 1) as usize;
+                let old_idx = row_start + old_x * BYTES_PER_PIXEL;
+                let new_idx = row_start + new_x * BYTES_PER_PIXEL;
+                for c in 0..3 {
+                    sums[c] -= u32::from(src[old_idx + c]);
+                    sums[c] += u32::from(src[new_idx + c]);
+                }
+            }
+        }
+    }
+}
+
+fn blur_cols(source: &mut Frame, out: &mut Frame, width: usize, height: usize, radius: usize) {
+    let src = source.pixels();
+    let dst = out.pixels_mut();
+    let row_bytes = width * BYTES_PER_PIXEL;
+    let window = (2 * radius + 1) as u32;
+    for x in 0..width {
+        let mut sums = [0u32; 3];
+        for offset in 0..window as usize {
+            let y = (offset as isize - radius as isize).clamp(0, height as isize - 1) as usize;
+            let idx = y * row_bytes + x * BYTES_PER_PIXEL;
+            for c in 0..3 { sums[c] += u32::from(src[idx + c]); }
+        }
+        for y in 0..height {
+            let idx = y * row_bytes + x * BYTES_PER_PIXEL;
+            for c in 0..3 { dst[idx + c] = (sums[c] / window) as u8; }
+            if y + 1 < height {
+                let old_y = (y as isize - radius as isize).clamp(0, height as isize - 1) as usize;
+                let new_y = (y as isize + radius as isize + 1).clamp(0, height as isize - 1) as usize;
+                let old_idx = old_y * row_bytes + x * BYTES_PER_PIXEL;
+                let new_idx = new_y * row_bytes + x * BYTES_PER_PIXEL;
+                for c in 0..3 {
+                    sums[c] -= u32::from(src[old_idx + c]);
+                    sums[c] += u32::from(src[new_idx + c]);
+                }
+            }
+        }
+    }
+}
+
 /// The frame with what the mask keeps tinted `colour`, and the rest as
 /// shot: the view a person paints against, where the picture stays whole
 /// and the cutout is drawn over it rather than taken out of it. The same
@@ -225,5 +362,60 @@ mod tests {
         assert_eq!(alpha(&big, 10, 250), 255);
         assert_eq!(alpha(&big, 990, 250), 0);
         assert_eq!(alpha(&big, 990, 499), 0);
+    }
+
+    #[test]
+    fn cut_blur_softens_background_not_foreground() {
+        let mut frame = Frame::black(16, 8);
+        frame.fill([200, 100, 50, 255]);
+        for y in 0..8 { for x in 8..16 { frame.set_pixel(x, y, [0, 0, 0, 255]); } }
+        cut_blur(&mut frame, &left_half_kept(), &Mapping::IDENTITY, 0.05);
+        assert_eq!(frame.pixel(2, 4).unwrap(), [200, 100, 50, 255]);
+        let near_edge = frame.pixel(8, 4).unwrap();
+        assert!(near_edge[0] > 0, "background edge should be softened: {near_edge:?}");
+        assert_eq!(frame.pixel(14, 4).unwrap(), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn blur_uses_three_separable_passes_without_dropping_extent() {
+        let mut frame = Frame::black(5, 5);
+        frame.set_pixel(2, 2, [255, 255, 255, 255]);
+        blur_frame(&mut frame, 1);
+        assert_eq!(frame.pixel(2, 2).unwrap(), [16, 16, 16, 255]);
+        assert_eq!(frame.pixel(0, 0).unwrap(), [5, 5, 5, 255]);
+    }
+
+    #[test]
+    fn cut_blur_zero_radius_is_noop() {
+        let mut frame = Frame::black(16, 8);
+        frame.fill([200, 100, 50, 255]);
+        cut_blur(&mut frame, &left_half_kept(), &Mapping::IDENTITY, 0.0);
+        // Nothing should change
+        assert_eq!(frame.pixel(13, 4).unwrap(), [200, 100, 50, 255]);
+    }
+
+    #[test]
+    fn cut_replace_paints_background_with_colour() {
+        let mut frame = Frame::black(16, 8);
+        frame.fill([200, 100, 50, 255]);
+        cut_replace(&mut frame, &left_half_kept(), &Mapping::IDENTITY, [0, 255, 0]);
+        // Foreground (left half) should be unchanged
+        assert_eq!(frame.pixel(2, 4).unwrap(), [200, 100, 50, 255]);
+        // Background (right half) should be replaced with green
+        let bg = frame.pixel(13, 4).unwrap();
+        assert_eq!(bg[0], 0);
+        assert_eq!(bg[1], 255);
+        assert_eq!(bg[2], 0);
+        assert_eq!(bg[3], 255);
+    }
+
+    #[test]
+    fn cut_replace_preserves_alpha() {
+        let mut frame = Frame::black(16, 8);
+        frame.fill([200, 100, 50, 128]);
+        cut_replace(&mut frame, &left_half_kept(), &Mapping::IDENTITY, [0, 0, 255]);
+        // Alpha should be preserved
+        assert_eq!(alpha(&frame, 13, 4), 128);
+        assert_eq!(alpha(&frame, 2, 4), 128);
     }
 }

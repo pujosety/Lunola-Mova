@@ -35,6 +35,7 @@ pub enum MediaMsg {
     Select {
         row: i32,
         additive: bool,
+        range: bool,
     },
     /// A marquee closed over the grid: the block of cells it caught.
     Band {
@@ -63,6 +64,9 @@ pub struct MediaBin {
     rows: HashMap<String, i32>,
     next_row: i32,
     pub selected: HashSet<String>,
+    /// Stable anchor for Shift-click range selection, resolved against the
+    /// visible sorted grid rather than document row numbers.
+    range_anchor: Option<String>,
     pub filter: MediaFilter,
     /// 0 = Added, 1 = Name, 2 = Kind
     pub sort: usize,
@@ -81,6 +85,7 @@ impl Default for MediaBin {
             rows: HashMap::new(),
             next_row: 1,
             selected: HashSet::new(),
+            range_anchor: None,
             filter: MediaFilter::All,
             sort: 0,
             thumbs: HashMap::new(),
@@ -96,17 +101,21 @@ impl MediaBin {
         match msg {
             MediaMsg::FilterChanged(filter) => self.filter = filter,
             MediaMsg::SortChanged(index) => self.sort = (index.max(0) as usize).min(2),
-            MediaMsg::Select { row, additive } => {
+            MediaMsg::Select {
+                row,
+                additive,
+                range,
+            } => {
                 let Some(id) = self
                     .by_row(studio.project(), row)
                     .map(|item| item.id.clone())
                 else {
                     return;
                 };
-                self.select(id.clone(), additive);
+                self.select(studio.project(), id.clone(), additive, range);
                 // A plain click shows a picture on the monitor, or plays a
                 // sound, without putting it on the timeline.
-                if !additive {
+                if !additive && !range {
                     studio.preview_media(&id, row);
                 }
             }
@@ -245,8 +254,34 @@ impl MediaBin {
         }
     }
 
-    /// A click: the one card, or toggled into what is held.
-    fn select(&mut self, id: String, additive: bool) {
+    /// Plain click replaces the selection, Ctrl/Cmd toggles one item, and
+    /// Shift selects the visible range from the stable anchor.
+    fn select(&mut self, project: &Project, id: String, additive: bool, range: bool) {
+        if range {
+            if let Some(anchor) = self.range_anchor.as_deref() {
+                let visible = self.visible(project);
+                let first = visible.iter().position(|item| item.id == anchor);
+                let last = visible.iter().position(|item| item.id == id);
+                if let (Some(first), Some(last)) = (first, last) {
+                    let (start, end) = if first <= last {
+                        (first, last)
+                    } else {
+                        (last, first)
+                    };
+                    let caught: HashSet<String> = visible[start..=end]
+                        .iter()
+                        .map(|item| item.id.clone())
+                        .collect();
+                    if additive {
+                        self.selected.extend(caught);
+                    } else {
+                        self.selected = caught;
+                    }
+                    return;
+                }
+            }
+        }
+        self.range_anchor = Some(id.clone());
         if additive {
             if !self.selected.remove(&id) {
                 self.selected.insert(id);
@@ -312,6 +347,15 @@ impl MediaBin {
             _ => {}
         }
         visible
+    }
+
+    /// Selected ids in the same stable order as the currently visible grid.
+    pub fn selected_visible_ids(&self, project: &Project) -> Vec<String> {
+        self.visible(project)
+            .into_iter()
+            .filter(|item| self.selected.contains(&item.id))
+            .map(|item| item.id.clone())
+            .collect()
     }
 
     /// The cards, as Slint shows them.
@@ -418,6 +462,18 @@ mod tests {
     }
 
     #[test]
+    fn selected_visible_media_ids_follow_the_current_sort_order() {
+        let mut bin = MediaBin::default();
+        let project = project();
+        bin.sort = 1;
+        bin.selected = ["v1", "a1", "v2"].into_iter().map(str::to_owned).collect();
+        assert_eq!(
+            bin.selected_visible_ids(&project),
+            ["a1", "v2", "v1"].map(str::to_owned)
+        );
+    }
+
+    #[test]
     fn a_filter_and_a_sort_shape_the_visible_list() {
         let mut bin = MediaBin::default();
         let project = project();
@@ -479,16 +535,40 @@ mod tests {
     }
 
     #[test]
-    fn a_click_toggles_only_when_additive() {
+    fn shift_click_selects_the_visible_range_from_the_anchor() {
         let mut bin = MediaBin::default();
-        bin.select("a".into(), false);
-        bin.select("b".into(), false);
-        assert_eq!(bin.selected.len(), 1);
-        assert!(bin.selected.contains("b"));
-        bin.select("a".into(), true);
+        let project = project();
+        bin.select(&project, "v1".into(), false, false);
+        bin.select(&project, "i1".into(), false, true);
+        assert_eq!(
+            bin.selected,
+            ["v1", "a1", "i1"].into_iter().map(str::to_owned).collect()
+        );
+        // A later Shift-click extends from the original anchor, not the prior endpoint.
+        bin.select(&project, "v2".into(), false, true);
+        assert_eq!(
+            bin.selected,
+            ["v1", "a1", "i1", "v2"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+    }
+
+    #[test]
+    fn control_click_toggles_one_item_and_resets_the_shift_anchor() {
+        let mut bin = MediaBin::default();
+        let project = project();
+        bin.select(&project, "v1".into(), false, false);
+        bin.select(&project, "i1".into(), true, false);
         assert_eq!(bin.selected.len(), 2);
-        bin.select("a".into(), true);
-        assert!(!bin.selected.contains("a"));
+        bin.select(&project, "i1".into(), true, false);
+        assert_eq!(bin.selected, ["v1".to_owned()].into_iter().collect());
+        bin.select(&project, "v2".into(), false, true);
+        assert_eq!(
+            bin.selected,
+            ["i1".to_owned(), "v2".to_owned()].into_iter().collect()
+        );
     }
 
     #[test]

@@ -62,8 +62,23 @@ impl Model {
     /// Loads a model from its bytes.
     pub fn from_bytes(bytes: &[u8]) -> Result<Model, String> {
         let mut builder = Session::builder().map_err(|error| format!("onnx runtime: {error}"))?;
+        let accelerator = platform_accelerator();
+        // DirectML requires sequential execution and no memory patterns.
+        // CPU-only runtimes keep their usual CPU session options.
+        #[cfg(target_os = "windows")]
+        if accelerator.is_some() {
+            builder = builder
+                .with_parallel_execution(false)
+                .and_then(|builder| builder.with_memory_pattern(false))
+                .map_err(|error| format!("DirectML session options: {error}"))?;
+        }
         builder = builder
-            .with_execution_providers(accelerators())
+            .with_execution_providers(
+                accelerator
+                    .into_iter()
+                    .chain(std::iter::once(ort::ep::CPU::default().build()))
+                    .collect::<Vec<_>>(),
+            )
             .map_err(|error| format!("onnx runtime: {error}"))?;
         // Every core on one frame at a time: the models are convolutional
         // and a frame fills a machine on its own.
@@ -130,13 +145,6 @@ impl Model {
 /// The platform's accelerators, ahead of the CPU. A provider the machine
 /// cannot supply is skipped, not an error, so the same build runs on a
 /// box without one.
-fn accelerators() -> Vec<ort::ep::ExecutionProviderDispatch> {
-    platform_accelerator()
-        .into_iter()
-        .chain(std::iter::once(ort::ep::CPU::default().build()))
-        .collect()
-}
-
 #[cfg(target_vendor = "apple")]
 fn platform_accelerator() -> Option<ort::ep::ExecutionProviderDispatch> {
     Some(ort::ep::CoreML::default().build())
@@ -144,7 +152,15 @@ fn platform_accelerator() -> Option<ort::ep::ExecutionProviderDispatch> {
 
 #[cfg(target_os = "windows")]
 fn platform_accelerator() -> Option<ort::ep::ExecutionProviderDispatch> {
-    Some(ort::ep::DirectML::default().build())
+    use ort::ep::ExecutionProvider;
+    let provider = ort::ep::DirectML::default();
+    // The shipped CPU ORT build does not advertise DML. Do not query its
+    // DML-specific API speculatively: repeated registration crashed native
+    // session creation on this runtime, before any model inference.
+    provider
+        .is_available()
+        .unwrap_or(false)
+        .then(|| provider.build())
 }
 
 #[cfg(target_os = "android")]

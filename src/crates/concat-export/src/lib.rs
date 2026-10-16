@@ -29,11 +29,11 @@ use resolve::{BuiltTimeline, TransitionSpan, Treatment, animation_of, build_time
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use concat_core::SpeedCurve;
 use concat_core::animate::{Animation, Ease as AnimEase, Key as AnimKey, Track as AnimTrack};
-use concat_core::frame::{Frame, Signal};
+use concat_core::frame::{Depth, Frame, Signal};
 use concat_core::shader::{RevealMap, ShaderPass};
 use concat_core::time::{FrameRate, Rational};
 use concat_core::timeline::{Clip, ClipId, MediaRef, Timeline, Track, TrackKind, Transform};
@@ -315,14 +315,29 @@ fn unity() -> f64 {
     1.0
 }
 
+/// A rendered timeline's file shape. Movie stays the default for older
+/// callers; PNG sequence writes one straight-RGBA frame per file and omits audio.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportFormat {
+    /// One encoded video file, with the configured codec and optional audio.
+    #[default]
+    Movie,
+    /// A numbered directory of straight-RGBA PNG frames, without audio.
+    PngSequence,
+}
+
 /// Everything a full export needs: the destination, the output format, and
 /// the flattened clip list.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
-    /// The file to write. Siblings named `.{stem}.concat-*` are used as
-    /// scratch during the render and removed afterwards.
+    /// The file to write, or the destination directory for a PNG sequence.
+    /// Siblings named `.{stem}.concat-*` are used as scratch during the render and removed afterwards.
     pub output: String,
+    /// The file shape. Defaults to movie for older callers.
+    #[serde(default)]
+    pub format: ExportFormat,
     /// Output frame width in pixels.
     pub width: u32,
     /// Output frame height in pixels.
@@ -906,6 +921,9 @@ pub fn render_on(
             concat_core::frame::MAX_SIDE
         ));
     }
+    if request.format == ExportFormat::PngSequence && (request.width < 2 || request.height < 2) {
+        return Err("PNG sequence output requires at least 2 pixels on each side".to_owned());
+    }
     let output = PathBuf::from(&request.output);
 
     // Transitions become overlaps, ramps and fade filters before anything
@@ -941,13 +959,18 @@ pub fn render_on(
     // sends it along; a request that omits it falls back to probing, once
     // per unique path.
     let mut probed: HashMap<&str, bool> = HashMap::new();
-    sound.retain(|clip| {
-        clip.has_audio.unwrap_or_else(|| {
-            *probed.entry(clip.path.as_str()).or_insert_with(|| {
-                concat_media::probe(&clip.path).is_ok_and(|info| info.audio.is_some())
+    if request.format == ExportFormat::Movie {
+        sound.retain(|clip| {
+            clip.has_audio.unwrap_or_else(|| {
+                *probed.entry(clip.path.as_str()).or_insert_with(|| {
+                    concat_media::probe(&clip.path).is_ok_and(|info| info.audio.is_some())
+                })
             })
-        })
-    });
+        });
+    } else {
+        // PNG sequences contain pictures only; do not probe or encode audio.
+        sound.clear();
+    }
 
     let timeline_end = resolved
         .iter()
@@ -973,6 +996,26 @@ pub fn render_on(
             "could not create the folder {}: {error}",
             directory.display()
         ));
+    }
+    if request.format == ExportFormat::PngSequence {
+        if request.hdr || request.color_space.is_hdr() {
+            return Err("transparent PNG sequence export currently supports SDR timelines only".to_owned());
+        }
+        if !transitions.is_empty() {
+            return Err("transparent PNG sequence export does not yet support packaged transitions".to_owned());
+        }
+        render_picture(
+            request,
+            compositor,
+            rate,
+            total_frames,
+            &visible,
+            transitions,
+            &output,
+            &mut reporter,
+        )?;
+        reporter.emit(total_frames, total_frames, "rendering");
+        return Ok(output.to_string_lossy().into_owned());
     }
     let silent = directory.join(format!(".{stem}.concat-video.mp4"));
     let mixed = directory.join(format!(".{stem}.concat-audio.m4a"));
@@ -1294,7 +1337,28 @@ fn headless<T>(draw: impl FnOnce(&mut WgpuCompositor) -> T) -> Result<T, String>
     Ok(draw(&mut gpu))
 }
 
-/// Composites every frame of the timeline into a soundless video file.
+enum PictureSink {
+    Movie(Encoder),
+    PngSequence(PngSequenceWriter),
+}
+
+impl PictureSink {
+    fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+        match self {
+            Self::Movie(encoder) => encoder.write_frame(frame).map_err(|error| error.to_string()),
+            Self::PngSequence(sequence) => sequence.write_frame(frame),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        match self {
+            Self::Movie(encoder) => encoder.finish().map_err(|error| error.to_string()),
+            Self::PngSequence(sequence) => sequence.finish(),
+        }
+    }
+}
+
+/// Composites every frame of the timeline into the selected picture output.
 fn render_picture(
     request: &ExportRequest,
     compositor: Option<WgpuCompositor>,
@@ -1343,6 +1407,10 @@ fn render_picture(
         highlight: _,
     } = build_timeline(request, rate, visible, transitions);
 
+    if request.format == ExportFormat::PngSequence && !transitions.is_empty() {
+        return Err("transparent PNG sequence export does not yet support packaged transitions".to_owned());
+    }
+
     let options = EncodeOptions {
         crf: request.crf,
         preset: request.preset.clone(),
@@ -1359,19 +1427,29 @@ fn render_picture(
     let signal = output_of(request.color_space);
     let hdr = request.hdr && signal != Signal::Sdr;
     compositor.deliver_hdr(hdr);
-    let mut encoder = if hdr {
-        Encoder::create_hdr(
+    let preserve_alpha = request.format == ExportFormat::PngSequence;
+    let mut sink = if preserve_alpha {
+        PictureSink::PngSequence(PngSequenceWriter::new(
             destination,
             request.width,
             request.height,
-            rate,
-            &options,
-            signal,
-        )
+        )?)
     } else {
-        Encoder::create(destination, request.width, request.height, rate, &options)
-    }
-    .map_err(|error| error.to_string())?;
+        let encoder = if hdr {
+            Encoder::create_hdr(
+                destination,
+                request.width,
+                request.height,
+                rate,
+                &options,
+                signal,
+            )
+        } else {
+            Encoder::create(destination, request.width, request.height, rate, &options)
+        }
+        .map_err(|error| error.to_string())?;
+        PictureSink::Movie(encoder)
+    };
 
     // How many devices have died under this export so far; see `recovered`.
     let mut losses = 0;
@@ -1514,14 +1592,18 @@ fn render_picture(
             output: output_of(request.color_space),
         };
         // The plan is kept for a second drawing: a frame drawn on a device
-        // that died under it is black, and is drawn again on the device
-        // that takes over. The copy is cheap - the pictures are shared.
-        let mut composed = composite_treated(
+        // that died under it is discarded and redrawn on the replacement.
+        let mut composed = match compose_export_frame(
             &mut compositor,
             frame_plan.clone(),
             &treatments,
             &transitions,
-        );
+            preserve_alpha,
+        ) {
+            Ok(frame) => frame,
+            Err(_) if compositor.lost() => Frame::transparent(request.width, request.height),
+            Err(error) => return Err(error),
+        };
         while compositor.lost() {
             losses += 1;
             let adapter = compositor.adapter_info();
@@ -1532,16 +1614,15 @@ fn render_picture(
                 time.as_f64(),
             );
             compositor = recovered(losses, hdr)?;
-            composed = composite_treated(
+            composed = compose_export_frame(
                 &mut compositor,
                 frame_plan.clone(),
                 &treatments,
                 &transitions,
-            );
+                preserve_alpha,
+            )?;
         }
-        encoder
-            .write_frame(&composed)
-            .map_err(|error| error.to_string())?;
+        sink.write_frame(&composed)?;
 
         // Retire decoders whose clip has finished, so a long timeline does not
         // hold an ffmpeg process open for every clip it has ever passed.
@@ -1554,7 +1635,7 @@ fn render_picture(
         }
     }
 
-    encoder.finish().map_err(|error| error.to_string())
+    sink.finish()
 }
 
 /// How many frames apart an export says how far it has got, at most.
@@ -1597,43 +1678,239 @@ fn passes_at(
 /// applies it where it draws.
 fn composite_treated(
     compositor: &mut dyn Compositor,
-    mut plan: FramePlan,
+    plan: FramePlan,
     treatments: &[Treatment],
     transitions: &[TransitionSpan],
 ) -> Frame {
+    composite_treated_with_alpha(compositor, plan, treatments, transitions, false)
+        .expect("opaque compositor path cannot fail")
+}
+
+/// As [`composite_treated`], retaining straight alpha for a transparent
+/// image sequence. Packaged transitions are rejected by the caller until
+/// their combine path can preserve alpha too.
+fn composite_treated_with_alpha(
+    compositor: &mut dyn Compositor,
+    mut plan: FramePlan,
+    treatments: &[Treatment],
+    transitions: &[TransitionSpan],
+    preserve_alpha: bool,
+) -> Result<Frame, String> {
     let time = plan.time;
+    let treated_now = treatments.iter().any(|treatment| treatment.covers(time));
+    if preserve_alpha && transitions.iter().any(|span| span.covers(time)) {
+        return Err("PNG sequence export does not yet support packaged transitions".to_owned());
+    }
     // A packaged transition live at this instant combines the outgoing stack
     // with the incoming picture through its shader. A live adjustment layer
-    // over the same frame is the one case we leave to the dissolve fallback,
-    // so the two never fight over the ground - a rare pairing, and the cut
-    // still transitions, just without its shader.
-    let treated_now = treatments.iter().any(|treatment| treatment.covers(time));
+    // over the same frame is the one case we leave to the dissolve fallback.
     if !treated_now
         && let Some(span) = transitions.iter().find(|span| span.covers(time))
         && let Some(frame) = combine_transition(compositor, &plan, span)
     {
-        return frame;
+        return Ok(frame);
     }
 
     let mut live: Vec<&Treatment> = treatments
         .iter()
         .filter(|treatment| treatment.covers(time))
         .collect();
-    if live.is_empty() {
+    if !live.is_empty() {
+        live.sort_by_key(|treatment| treatment.track);
+        plan.treatments = live
+            .iter()
+            .map(|treatment| PlannedTreatment {
+                track: treatment.track,
+                effects: treatment.passes_at(time),
+                strength: treatment.strength_at(time),
+            })
+            .collect();
+    } else {
         plan.treatments.clear();
-        return compositor.render(&plan);
     }
-    live.sort_by_key(|treatment| treatment.track);
-    plan.treatments = live
-        .iter()
-        .map(|treatment| PlannedTreatment {
-            track: treatment.track,
-            effects: treatment.passes_at(time),
-            strength: treatment.strength_at(time),
-        })
-        .collect();
-    compositor.render(&plan)
+    if preserve_alpha {
+        compositor
+            .render_alpha(&plan)
+            .ok_or_else(|| "the compositor cannot preserve alpha for PNG sequence output".to_owned())
+    } else {
+        Ok(compositor.render(&plan))
+    }
 }
+
+fn compose_export_frame(
+    compositor: &mut WgpuCompositor,
+    plan: FramePlan,
+    treatments: &[Treatment],
+    transitions: &[TransitionSpan],
+    preserve_alpha: bool,
+) -> Result<Frame, String> {
+    if preserve_alpha {
+        composite_treated_with_alpha(compositor, plan, treatments, transitions, true)
+    } else {
+        Ok(composite_treated(compositor, plan, treatments, transitions))
+    }
+}
+
+static NEXT_SEQUENCE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A numbered PNG folder staged beside its destination and swapped in only
+/// after every frame has been written successfully.
+struct PngSequenceWriter {
+    destination: PathBuf,
+    staging: PathBuf,
+    width: u32,
+    height: u32,
+    written: u64,
+    committed: bool,
+}
+
+impl PngSequenceWriter {
+    fn new(destination: &Path, width: u32, height: u32) -> Result<Self, String> {
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("could not create PNG sequence parent {}: {error}", parent.display())
+        })?;
+        let name = destination
+            .file_name()
+            .ok_or_else(|| "PNG sequence destination needs a directory name".to_owned())?
+            .to_string_lossy();
+        let staging = loop {
+            let id = NEXT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
+            let candidate = parent.join(format!(
+                ".{name}.concat-sequence-{}-{id}.tmp",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(format!(
+                        "could not create PNG sequence staging folder {}: {error}",
+                        candidate.display()
+                    ));
+                }
+            }
+        };
+        Ok(Self {
+            destination: destination.to_path_buf(),
+            staging,
+            width,
+            height,
+            written: 0,
+            committed: false,
+        })
+    }
+
+    fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
+        if frame.width() != self.width || frame.height() != self.height {
+            return Err(format!(
+                "PNG sequence frame size mismatch: expected {}×{}, got {}×{}",
+                self.width,
+                self.height,
+                frame.width(),
+                frame.height()
+            ));
+        }
+        if frame.depth() != Depth::Eight {
+            return Err("PNG sequence export currently requires 8-bit SDR frames".to_owned());
+        }
+        let next = self.written + 1;
+        let path = self.staging.join(format!("frame_{next:06}.png"));
+        let file = std::fs::File::create(&path)
+            .map_err(|error| format!("could not create {}: {error}", path.display()))?;
+        let mut encoder = png::Encoder::new(file, self.width, self.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|error| format!("could not write {} header: {error}", path.display()))?;
+        writer
+            .write_image_data(frame.pixels())
+            .map_err(|error| format!("could not write {} pixels: {error}", path.display()))?;
+        self.written = next;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), String> {
+        if self.committed {
+            return Ok(());
+        }
+        if self.written == 0 {
+            return Err("PNG sequence contains no frames".to_owned());
+        }
+        let backup = if self.destination.exists() {
+            let parent = self.destination.parent().unwrap_or_else(|| Path::new("."));
+            let name = self
+                .destination
+                .file_name()
+                .map_or_else(|| "sequence".into(), |name| name.to_string_lossy());
+            let backup = loop {
+                let id = NEXT_SEQUENCE_ID.fetch_add(1, Ordering::Relaxed);
+                let candidate = parent.join(format!(
+                    ".{name}.concat-sequence-backup-{}-{id}",
+                    std::process::id()
+                ));
+                if !candidate.exists() {
+                    break candidate;
+                }
+            };
+            std::fs::rename(&self.destination, &backup).map_err(|error| {
+                format!(
+                    "could not move existing sequence {} aside: {error}",
+                    self.destination.display()
+                )
+            })?;
+            Some(backup)
+        } else {
+            None
+        };
+        if let Err(error) = std::fs::rename(&self.staging, &self.destination) {
+            if let Some(backup) = &backup {
+                if let Err(restore) = std::fs::rename(backup, &self.destination) {
+                    return Err(format!(
+                        "could not install PNG sequence {} ({error}) or restore prior output ({restore})",
+                        self.destination.display()
+                    ));
+                }
+            }
+            return Err(format!(
+                "could not install PNG sequence {}: {error}",
+                self.destination.display()
+            ));
+        }
+        self.committed = true;
+        if let Some(backup) = backup
+            && let Err(error) = remove_any(&backup)
+        {
+            log::warn!(
+                "export: could not remove replaced PNG sequence backup {}: {error}",
+                backup.display()
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PngSequenceWriter {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = std::fs::remove_dir_all(&self.staging);
+        }
+    }
+}
+
+fn remove_any(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
 
 /// The two pictures a packaged transition combines: the outgoing stack,
 /// strictly below the incoming lane, and the incoming picture over that
@@ -2025,6 +2302,7 @@ pub fn preview_plan(
     // keeps one conversion path rather than a preview-flavoured copy of it.
     let shim = ExportRequest {
         output: String::new(),
+        format: ExportFormat::Movie,
         width,
         height,
         rate_num,
@@ -2599,6 +2877,7 @@ mod tests {
         let nested = root.join("Movies").join("Concat");
         let request = ExportRequest {
             output: nested.join("out.mp4").to_string_lossy().into_owned(),
+            format: ExportFormat::Movie,
             width: 64,
             height: 64,
             rate_num: 30,
@@ -2679,6 +2958,7 @@ mod tests {
         let output = dir.join("out.mp4");
         let request = ExportRequest {
             output: output.to_string_lossy().into_owned(),
+            format: ExportFormat::Movie,
             width: 64,
             height: 64,
             rate_num: 30,

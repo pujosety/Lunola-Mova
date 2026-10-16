@@ -199,9 +199,16 @@ export component TitleBar inherits Rectangle {
         padding-right: root.own-buttons ? 0px : 8px;
         spacing: 2px;
 
-        // No mark and no wordmark: the strip opens on the menus. A window
-        // does not need to say whose it is on every frame, and the launch
-        // screen's heading already carries the name where it means something.
+        // A compact product name leaves the supplied full wordmark to Start
+        // and About. This is not a control: the native drag region remains.
+        if root.minimal: Text {
+            text: "Lunola Mova";
+            color: Theme.fg;
+            font-size: Theme.fs;
+            font-weight: Theme.weight-title;
+            vertical-alignment: center;
+        }
+        if root.minimal: Rectangle { width: 10px; }
 
         // Each label reports its own position rather than a fixed one: they
         // are sized from their text, so where "View" starts depends on how

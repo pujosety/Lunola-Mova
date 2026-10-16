@@ -42,9 +42,9 @@
 // stage stays black because a tinted ground behind picture is a tinted
 // picture — a light theme does not get to relight the footage.
 //
-// The greys carry a trace of blue as they darken, the way `page` does in the
-// dark palette. It is what keeps a large field of light grey from going warm
-// and reading as paper.
+// Cool lavender surfaces mirror the dark theme's plum ladder. The violet
+// action tone is deeper than the exact brand purple so small text, focus
+// indicators and white labels hold their contrast on the light surfaces.
 import { Accent } from "accent.slint";
 
 export global Light {
@@ -55,24 +55,22 @@ export global Light {
     // panes are the lit thing, the ground is not, and the step between them is
     // the gutter. `raised` is the only pure white in the window and is spent
     // where something genuinely floats — a menu, a tooltip, a dialog sheet.
-    out property <color> panel: #f7f7f8;
+    out property <color> panel: #f8f7fb;
     out property <color> raised: #ffffff;
-    out property <color> well: #dfdfe4;
-    out property <color> field: #f0f0f2;
-    out property <color> field-hover: #e8e8ec;
-    out property <color> field-active: #d6d6dd;
+    out property <color> well: #e2dce9;
+    out property <color> field: #f1edf6;
+    out property <color> field-hover: #e9e2f0;
+    out property <color> field-active: #e0d9e8;
 
     // the launch screen's own ladder — see the dark palette for why it
-    // exists. Deeper here too, which on this side of the switch means a
-    // greyer page and panes that stop short of white: the launcher is the
-    // one screen with no picture on it, and it is allowed to be the quiet
-    // room the rest of the app is not.
-    out property <color> launch-page: #c4c4cd;
-    out property <color> launch-panel: #ededf1;
-    out property <color> launch-well: #d6d6dd;
-    out property <color> launch-raised: #f7f7f8;
-    out property <color> launch-field: #e2e2e8;
-    out property <color> launch-field-active: #cdcdd6;
+    // exists. The pale lavender page separates the artwork hero from the
+    // project shelf; both keep the same quiet surface ladder as the editor.
+    out property <color> launch-page: #e8e1f0;
+    out property <color> launch-panel: #f8f7fb;
+    out property <color> launch-well: #e2dce9;
+    out property <color> launch-raised: #ffffff;
+    out property <color> launch-field: #f1edf6;
+    out property <color> launch-field-active: #e0d9e8;
 
     // hairlines — black-alpha, the mirror of the dark palette's white-alpha,
     // so they hold on panel, well, and ground alike. A shade heavier than a
@@ -83,9 +81,9 @@ export global Light {
 
     // text — the three steps of the dark palette's ramp, matched on contrast
     // against `panel` rather than by inverting the channels.
-    out property <color> fg: #16161a;
-    out property <color> fg-muted: #56565e;
-    out property <color> fg-dim: #86868c;
+    out property <color> fg: #21172e;
+    out property <color> fg-muted: #5b5266;
+    out property <color> fg-dim: #63596d;
     // Away from a light ground is down, not up; see the dark palette.
     out property <color> fg-hot: #000000;
 
@@ -110,7 +108,7 @@ export global Light {
     out property <[Accent]> accents: [
         { accent: #4d7c0f, hover: #3f680b, soft: #4d7c0f2e, on: #ffffff },   // lime
         { accent: #1f66d1, hover: #1a55b0, soft: #1f66d12e, on: #ffffff },   // sky
-        { accent: #7239e6, hover: #6030c8, soft: #7239e62e, on: #ffffff },   // violet
+        { accent: #8831bd, hover: #72249f, soft: #8831bd2e, on: #ffffff },   // violet / accessible light-theme purple
         { accent: #cf2468, hover: #b01d58, soft: #cf24682e, on: #ffffff },   // rose
         { accent: #b4530a, hover: #98450a, soft: #b4530a2e, on: #ffffff },   // amber
         { accent: #0f7a6e, hover: #0c665c, soft: #0f7a6e2e, on: #ffffff },   // mint
@@ -241,6 +239,6 @@ export global Light {
     // panel for the gutters to read as gaps rather than as seams, and still a
     // step under the darkest surface inside a pane, so a pane's floor never
     // mistakes itself for the space between panes.
-    out property <color> page: #d2d2d9;
-    out property <color> page-fg-muted: #56565e;
+    out property <color> page: #ddd5e7;
+    out property <color> page-fg-muted: #5b5266;
 }

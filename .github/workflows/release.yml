@@ -1,5 +1,8 @@
 name: Release
 
+permissions:
+  contents: read
+
 # Pushing a tag that starts with v (v0.3.0, v0.3.0-alpha.1, ...) builds the
 # app for every platform and architecture, desktops and phones, and
 # publishes a GitHub release under that tag with one bundle per target and
@@ -38,6 +41,7 @@ concurrency:
 
 jobs:
   check:
+    if: vars.LUNOLA_PUBLICATION_ENABLED == 'true'
     name: Tag matches the version
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -79,7 +83,7 @@ jobs:
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           # The bundles are named for the version, not the tag: v0.2.1 and
-          # v0.2.1-alpha.22 both produce Concat-0.2.1-* files.
+          # v0.2.1-alpha.22 both produce Lunola-Mova-0.2.1-* files.
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # The engine's tests and lints, on the tagged commit: a tag on a red
@@ -113,6 +117,7 @@ jobs:
     secrets: inherit
 
   publish:
+    if: vars.LUNOLA_PUBLICATION_ENABLED == 'true'
     name: Publish release
     needs: [check, build, phones]
     runs-on: ubuntu-latest
@@ -123,7 +128,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: bundles
-          pattern: Concat-*
+          pattern: Lunola-Mova-*
           merge-multiple: true
 
       # The tree the release is cut from: the notes are read out of its
@@ -144,11 +149,41 @@ jobs:
           TAG: ${{ needs.check.outputs.tag }}
         run: |
           set -euo pipefail
-          python3 source/scripts/models.py release-manifest \
-            --version "$VERSION" \
-            --tag "$TAG" \
-            --bundles bundles \
-            --out bundles/manifest.json
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, runpy
+          from urllib.parse import quote
+          upstream = runpy.run_path("source/scripts/models.py")
+          version, tag = os.environ["VERSION"], os.environ["TAG"]
+          manifest = upstream["release_manifest"](version, tag, None)
+          # Keep models, licences, sources and digests byte-for-byte in meaning.
+          manifest["product"] = "Lunola Mova"
+          manifest["binaries"] = {}
+          bundles = pathlib.Path("bundles")
+          expected = set()
+          for platform, arch, kind, stem in upstream["BUNDLES"]:
+              if not stem.startswith("Concat-"):
+                  raise SystemExit("Unreviewed upstream artifact naming change")
+              file = "Lunola-Mova-" + stem[len("Concat-"):].format(v=version)
+              if platform == "windows":
+                  file = file.replace("windows-x86_64", "windows-x64")
+                  file = file.replace("windows-aarch64", "windows-arm64")
+                  file = file.replace("-setup.exe", ".exe")
+              expected.add(file)
+              path = bundles / file
+              if not path.is_file():
+                  raise SystemExit(f"Missing reviewed target artifact: {file}")
+              entry = {
+                  "file": file,
+                  "url": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{quote(tag, safe='')}/{quote(file, safe='')}",
+                  "bytes": path.stat().st_size,
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+              }
+              manifest["binaries"].setdefault(platform, {}).setdefault(arch, {})[kind] = entry
+          actual = {p.name for p in bundles.iterdir()}
+          if actual != expected:
+              raise SystemExit(f"Unexpected release inventory: {actual ^ expected}")
+          (bundles / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
           cat bundles/manifest.json
 
       - name: Checksums
@@ -183,7 +218,7 @@ jobs:
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          name: Concat ${{ needs.check.outputs.tag }}
+          name: Lunola Mova
           draft: true
           prerelease: ${{ contains(needs.check.outputs.tag, '-') }}
           body_path: ${{ runner.temp }}/notes.md

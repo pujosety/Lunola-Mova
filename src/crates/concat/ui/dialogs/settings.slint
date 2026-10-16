@@ -3,6 +3,7 @@
 
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
+import { BrandWordmark } from "../brand.slint";
 import { NumberField } from "../primitives/number-field.slint";
 import { Glyph, Icon } from "../icons.slint";
 import { Button, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
@@ -1163,18 +1164,37 @@ export component SettingsDialog inherits Modal {
             }
 
             if root.data.tab == 5: VerticalLayout {
-                // The name and the build, and nothing under them: the engine
-                // and the FFmpeg it links are rows of the table below, where
-                // a report reads them from.
+                // Fork identity is separate from upstream authorship. Keep
+                // the real build version and complete diagnostics below.
                 DialogSection {
                     first: true;
                     title: I18n.t("settings.about");
 
+                    BrandWordmark { }
+                    Text {
+                        text: "Make Every Frame Move.";
+                        color: Theme.fg;
+                        font-size: Theme.fs-xl;
+                        font-weight: Theme.weight-title;
+                        wrap: word-wrap;
+                    }
                     Text {
                         text: I18n.t1("settings.concat", "\{root.data.version}");
                         color: Theme.fg;
                         font-size: Theme.fs-lg;
                         font-weight: Theme.weight-title;
+                    }
+                    Text {
+                        text: "Lunola Mova is an independently branded fork of Concat. Original software: Jareer and Concat contributors. No upstream endorsement is implied.";
+                        color: Theme.fg-muted;
+                        font-size: Theme.fs;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "AGPL-3.0-or-later · Provided without warranty. See LICENSE and THIRD_PARTY_NOTICES.md in the source distribution.";
+                        color: Theme.fg-muted;
+                        font-size: Theme.fs;
+                        wrap: word-wrap;
                     }
                 }
 

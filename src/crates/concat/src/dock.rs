@@ -5,6 +5,7 @@
 //! for Slint, which has no recursion.
 
 use crate::ui::{DockDivider, DockSide, PaneKind, SeatBox};
+use serde::{Deserialize, Serialize};
 
 pub const SEAT_MIN_W: f32 = 240.0;
 pub const SEAT_MIN_H: f32 = 140.0;
@@ -34,6 +35,123 @@ pub enum Dock {
         first: Box<Dock>,
         second: Box<Dock>,
     },
+}
+
+/// Versioned, UI-independent representation of the wide and compact workspace
+/// trees stored in settings.json. Pane names are stable strings rather than
+/// Slint-generated enum encoding.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedWorkspace {
+    version: u8,
+    wide: SavedDock,
+    compact: SavedDock,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "node", rename_all = "camelCase")]
+enum SavedDock {
+    Pane {
+        kind: SavedPane,
+    },
+    Split {
+        columns: bool,
+        ratio: f32,
+        first: Box<SavedDock>,
+        second: Box<SavedDock>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SavedPane {
+    Media,
+    Preview,
+    Inspector,
+    Timeline,
+    Keyframes,
+    Meters,
+}
+
+impl SavedDock {
+    fn from_dock(dock: &Dock) -> Self {
+        match dock {
+            Dock::Leaf(kind) => SavedDock::Pane {
+                kind: match kind {
+                    PaneKind::Media => SavedPane::Media,
+                    PaneKind::Preview => SavedPane::Preview,
+                    PaneKind::Inspector => SavedPane::Inspector,
+                    PaneKind::Timeline => SavedPane::Timeline,
+                    PaneKind::Keyframes => SavedPane::Keyframes,
+                    PaneKind::Meters => SavedPane::Meters,
+                },
+            },
+            Dock::Split {
+                columns,
+                ratio,
+                first,
+                second,
+            } => SavedDock::Split {
+                columns: *columns,
+                ratio: *ratio,
+                first: Box::new(Self::from_dock(first)),
+                second: Box::new(Self::from_dock(second)),
+            },
+        }
+    }
+
+    fn into_dock(&self, depth: usize) -> Option<Dock> {
+        if depth > 8 {
+            return None;
+        }
+        match self {
+            SavedDock::Pane { kind } => Some(Dock::Leaf(match kind {
+                SavedPane::Media => PaneKind::Media,
+                SavedPane::Preview => PaneKind::Preview,
+                SavedPane::Inspector => PaneKind::Inspector,
+                SavedPane::Timeline => PaneKind::Timeline,
+                SavedPane::Keyframes => PaneKind::Keyframes,
+                SavedPane::Meters => PaneKind::Meters,
+            })),
+            SavedDock::Split {
+                columns,
+                ratio,
+                first,
+                second,
+            } => {
+                if !ratio.is_finite() || *ratio <= 0.0 || *ratio >= 1.0 {
+                    return None;
+                }
+                Some(Dock::Split {
+                    columns: *columns,
+                    ratio: *ratio,
+                    first: Box::new(first.into_dock(depth + 1)?),
+                    second: Box::new(second.into_dock(depth + 1)?),
+                })
+            }
+        }
+    }
+}
+
+impl SavedWorkspace {
+    const VERSION: u8 = 1;
+
+    pub fn from_docks(wide: &Dock, compact: &Dock) -> Self {
+        Self {
+            version: Self::VERSION,
+            wide: SavedDock::from_dock(wide),
+            compact: SavedDock::from_dock(compact),
+        }
+    }
+
+    /// Unknown versions, invalid split ratios and excessively deep settings
+    /// are ignored so a corrupt/forward-version layout falls back to defaults.
+    pub fn into_docks(&self) -> Option<(Dock, Dock)> {
+        if self.version != Self::VERSION {
+            return None;
+        }
+        Some((self.wide.into_dock(0)?, self.compact.into_dock(0)?))
+    }
 }
 
 impl Dock {
@@ -297,6 +415,16 @@ pub fn compact_dock() -> Dock {
     }
 }
 
+/// Returns `(active, aside)` with the normal wide/compact defaults while
+/// preserving which layout is currently active.
+pub fn default_docks_for(compact_active: bool) -> (Dock, Dock) {
+    if compact_active {
+        (compact_dock(), default_dock())
+    } else {
+        (default_dock(), compact_dock())
+    }
+}
+
 pub fn row_top(heights: &[f32], row: i32) -> f32 {
     heights.iter().take(row.max(0) as usize).sum()
 }
@@ -329,4 +457,51 @@ pub fn nearest_row(heights: &[f32], y: f32) -> i32 {
         top += height;
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_defaults_keep_the_wide_and_compact_layouts_in_the_correct_slots() {
+        let expected = SavedWorkspace::from_docks(&default_dock(), &compact_dock());
+        let (wide, compact) = default_docks_for(false);
+        assert_eq!(SavedWorkspace::from_docks(&wide, &compact), expected);
+
+        let (compact_active, wide_aside) = default_docks_for(true);
+        assert_eq!(
+            SavedWorkspace::from_docks(&wide_aside, &compact_active),
+            expected
+        );
+    }
+
+    #[test]
+    fn persisted_wide_and_compact_docks_roundtrip_without_losing_ratios() {
+        let mut wide = default_dock();
+        if let Dock::Split { ratio, .. } = &mut wide {
+            *ratio = 0.57;
+        }
+        let compact = compact_dock();
+        let saved = SavedWorkspace::from_docks(&wide, &compact);
+        let encoded = serde_json::to_vec(&saved).expect("serialize workspace");
+        let decoded: SavedWorkspace = serde_json::from_slice(&encoded).expect("decode workspace");
+        let (wide, compact) = decoded.into_docks().expect("supported workspace version");
+        assert_eq!(SavedWorkspace::from_docks(&wide, &compact), saved);
+    }
+
+    #[test]
+    fn persisted_workspace_rejects_unknown_versions_and_invalid_ratios() {
+        let saved = SavedWorkspace::from_docks(&default_dock(), &compact_dock());
+        let mut value = serde_json::to_value(&saved).expect("serialize workspace");
+        value["version"] = serde_json::json!(2);
+        let future: SavedWorkspace = serde_json::from_value(value).expect("decode future version");
+        assert!(future.into_docks().is_none());
+
+        let mut value = serde_json::to_value(&saved).expect("serialize workspace");
+        value["wide"]["ratio"] = serde_json::json!(1.4);
+        let malformed: SavedWorkspace =
+            serde_json::from_value(value).expect("decode malformed layout");
+        assert!(malformed.into_docks().is_none());
+    }
 }

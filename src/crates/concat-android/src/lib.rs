@@ -112,9 +112,9 @@ mod java {
     use jni::{Env, JavaVM, jni_sig, jni_str};
     use slint::android::AndroidApp;
 
-    /// The classes build.rs compiled: app.concat.editor.ConcatFiles.
+    /// The classes build.rs compiled: app.lunola.mova.ConcatFiles.
     const DEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
-    const CLASS_NAME: &str = "app.concat.editor.ConcatFiles";
+    const CLASS_NAME: &str = "app.lunola.mova.ConcatFiles";
 
     /// The fragment class, loaded once and kept.
     static CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
@@ -288,7 +288,7 @@ mod picker {
 /// The export writes into the app's own folder, which on a phone nothing
 /// but the app can open: not the gallery, not a file manager (#280,
 /// #147). So once a file is written the Java moves it into the phone's
-/// Movies, under Concat, through the media store, and the sheet names
+/// Movies, under Lunola Mova, through the media store, and the sheet names
 /// that folder from the start. A phone older than Android 10 has no
 /// media store an app can write through without a permission; there the
 /// file stays where it was written, and the sheet says so.
@@ -324,7 +324,7 @@ mod publisher {
         });
     }
 
-    /// `ConcatFiles.publishedFolder`: "Movies/Concat", or nothing.
+    /// `ConcatFiles.publishedFolder`: "Movies/Lunola Mova", or nothing.
     fn published_folder(app: &AndroidApp) -> jni::errors::Result<Option<String>> {
         super::java::with_class(app, |env, _activity, class| {
             let answer = env
@@ -384,7 +384,7 @@ fn android_main(app: slint::android::AndroidApp) {
     // Directories first: the log file is written into one of them.
     activity::name_directories(&app);
     activity::open_log();
-    log::info!("Concat {} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("Lunola Mova {} starting", env!("CARGO_PKG_VERSION"));
     if let Err(error) = slint::android::init(app.clone()) {
         log::error!("could not start the Android backend: {error}");
         return;

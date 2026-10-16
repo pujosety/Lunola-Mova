@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
-package app.concat.editor;
+package app.lunola.mova;
 
 import android.app.Activity;
 import android.app.Fragment;
@@ -54,7 +54,7 @@ public class ConcatFiles extends Fragment {
     private static final String TAG = "concat-files";
 
     /**
-     * Where a finished export goes, under the phone's storage: Movies/Concat.
+     * Where a finished export goes, under the phone's storage: Movies/Lunola Mova.
      * Null before Android 10, which has no media store an app can write
      * through without a permission; there the file stays in the app's folder.
      */
@@ -62,7 +62,7 @@ public class ConcatFiles extends Fragment {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return null;
         }
-        return Environment.DIRECTORY_MOVIES + "/Concat";
+        return Environment.DIRECTORY_MOVIES + "/Lunola Mova";
     }
 
     /**

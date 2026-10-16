@@ -220,6 +220,18 @@ component Header inherits Rectangle {
     callback sized(size: TrackSize);
     callback removed();
 
+    Text {
+        x: 10px;
+        y: parent.height - 19px;
+        width: parent.width - 16px;
+        height: 16px;
+        visible: root.track.label != "" && parent.height >= 48px;
+        text: root.track.label;
+        color: root.track.audio ? Theme.accent : Theme.fg-muted;
+        font-size: 11px;
+        font-weight: 600;
+    }
+
     Rectangle {
         x: 0;
         y: parent.height - 1px;

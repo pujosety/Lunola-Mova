@@ -17,6 +17,13 @@ use crate::CpuCompositor;
 use crate::metrics::ssim;
 use crate::plan::{Crop, Transition, detached_clip};
 
+#[test]
+fn shared_queue_off_thread_rejects_vulkan_backend() {
+    assert!(!WgpuCompositor::off_thread_queue_safe(wgpu::Backend::Vulkan));
+    assert!(WgpuCompositor::off_thread_queue_safe(wgpu::Backend::Dx12));
+    assert!(WgpuCompositor::off_thread_queue_safe(wgpu::Backend::Metal));
+}
+
 fn gpu() -> Option<WgpuCompositor> {
     let compositor = WgpuCompositor::new();
     if compositor.is_none() {

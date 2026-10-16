@@ -42,5 +42,9 @@ ort = { workspace = true, optional = true, features = ["directml"] }
 [target.'cfg(target_os = "android")'.dependencies]
 ort = { workspace = true, optional = true, features = ["nnapi"] }
 
+[[example]]
+name = "lunola-cutout-bench"
+required-features = ["infer"]
+
 [lints]
 workspace = true

@@ -1,10 +1,13 @@
 name: Build for phones
 
-# Builds Concat for Android and iOS and uploads one artifact per phone,
+permissions:
+  contents: read
+
+# Builds Lunola Mova for Android and iOS and uploads one artifact per phone,
 # named like the desktop bundles from build-app.yml:
 #
-#   Android  arm64  -> Concat-<version>-android-arm64.apk
-#   iOS      arm64  -> Concat-<version>-ios-arm64.ipa
+#   Android  arm64  -> Lunola-Mova-<version>-android-arm64.apk
+#   iOS      arm64  -> Lunola-Mova-<version>-ios-arm64.ipa
 #
 # Reusable, the way build-app.yml is: release.yml calls it on every tag,
 # so a release carries the phones beside the desktops. Pull requests build
@@ -101,12 +104,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Publication signing review gate
+        if: inputs.sign && vars.LUNOLA_PUBLICATION_ENABLED != 'true'
+        run: |
+          echo "::error::Lunola Mova publication/signing requires explicit review enablement"
+          exit 1
       - name: Read the version
         id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' src/Cargo.toml | head -1)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Building Concat $version for aarch64-linux-android"
+          echo "Building Lunola Mova $version for aarch64-linux-android"
       # The toolchain src/rust-toolchain.toml pins, installed by name, with
       # the phone's standard library.
       - name: The pinned toolchain
@@ -165,7 +173,7 @@ jobs:
           keystore=$RUNNER_TEMP/run.keystore
           keytool -genkeypair -v -keystore "$keystore" -storepass concat -keypass concat \
             -alias concat -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Concat, O=Concat" >/dev/null 2>&1
+            -dname "CN=Lunola Mova, O=Lunola" >/dev/null 2>&1
           echo "CARGO_APK_RELEASE_KEYSTORE=$keystore" >> "$GITHUB_ENV"
           echo "CARGO_APK_RELEASE_KEYSTORE_PASSWORD=concat" >> "$GITHUB_ENV"
 
@@ -191,7 +199,7 @@ jobs:
       # the keystore's, which is what a key made with the keystore has).
       # A prompt on a runner is a step that waits for its timeout.
       - name: Sign with the repository's key
-        if: inputs.sign
+        if: inputs.sign && vars.LUNOLA_PUBLICATION_ENABLED == 'true'
         timeout-minutes: 10
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE }}
@@ -219,7 +227,7 @@ jobs:
           fi
           sdk=${ANDROID_HOME:-$ANDROID_SDK_ROOT}
           tools=$(find "$sdk/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
-          apk=src/target/release/apk/Concat.apk
+          apk=src/target/release/apk/Lunola-Mova.apk
           "$tools/apksigner" sign --ks "$keystore" --ks-pass env:KEYSTORE_PASSWORD \
             --ks-key-alias "$alias" --key-pass env:KEY_PASSWORD "$apk" < /dev/null
           rm -f "$keystore"
@@ -244,12 +252,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir stage
-          cp src/target/release/apk/Concat.apk "stage/Concat-$VERSION-android-arm64.apk"
+          cp src/target/release/apk/Lunola-Mova.apk "stage/Lunola-Mova-$VERSION-android-arm64.apk"
           ls -l stage
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Concat-android-arm64
+          name: Lunola-Mova-android-arm64
           path: stage/*
           if-no-files-found: error
 
@@ -273,7 +281,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         timeout-minutes: 10
         with:
-          name: Concat-android-arm64
+          name: Lunola-Mova-android-arm64
           path: apk
 
       # The emulator needs KVM, which the runner has but only root may
@@ -306,7 +314,7 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none
           disable-animations: true
-          script: scripts/ci/smoke-android.sh --out smoke-android --wait 60 apk/Concat-*.apk
+          script: scripts/ci/smoke-android.sh --out smoke-android --wait 60 apk/Lunola-Mova-*.apk
 
       # The log, the screenshot and the rest, pass or fail.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -325,12 +333,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Publication signing review gate
+        if: inputs.sign && vars.LUNOLA_PUBLICATION_ENABLED != 'true'
+        run: |
+          echo "::error::Lunola Mova publication/signing requires explicit review enablement"
+          exit 1
       - name: Read the version
         id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' src/Cargo.toml | head -1)
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Building Concat $version for aarch64-apple-ios"
+          echo "Building Lunola Mova $version for aarch64-apple-ios"
       - name: The pinned toolchain
         id: toolchain
         run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' src/rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
@@ -404,13 +417,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p stage payload/Payload
-          cp -R src/target/aarch64-apple-ios/release/Concat.app payload/Payload/
-          (cd payload && ditto -c -k --keepParent Payload "../stage/Concat-$VERSION-ios-arm64.ipa")
+          cp -R "src/target/aarch64-apple-ios/release/Lunola Mova.app" payload/Payload/
+          (cd payload && ditto -c -k --keepParent Payload "../stage/Lunola-Mova-$VERSION-ios-arm64.ipa")
           ls -l stage
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: Concat-ios-arm64
+          name: Lunola-Mova-ios-arm64
           path: stage/*
           if-no-files-found: error
 
@@ -518,7 +531,7 @@ jobs:
       # a launch as from the home screen, watched for a minute.
       - name: Start the app on a simulator
         timeout-minutes: 25
-        run: scripts/ci/smoke-ios.sh --out smoke-ios --wait 60 src/target/aarch64-apple-ios-sim/release/Concat.app
+        run: scripts/ci/smoke-ios.sh --out smoke-ios --wait 60 "src/target/aarch64-apple-ios-sim/release/Lunola Mova.app"
 
       # The app's output, the system log, the screenshot and any crash
       # report, pass or fail.

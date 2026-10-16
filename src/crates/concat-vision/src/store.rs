@@ -84,6 +84,7 @@ pub struct MaskStore {
     times: Vec<u64>,
     /// The model that made them, as the directory's `model` file says.
     model: Option<String>,
+    generation: u64,
 }
 
 impl MaskStore {
@@ -110,7 +111,14 @@ impl MaskStore {
             dir: dir.to_path_buf(),
             times,
             model,
+            generation: Self::generation(dir),
         }
+    }
+
+    /// Process-local publication identity. MaskStore writers also advance ancestors
+    /// so smart-region replacement invalidates its parent resolved mask and plan.
+    pub fn generation(dir: &Path) -> u64 {
+        *generations().lock().unwrap_or_else(|p| p.into_inner()).get(dir).unwrap_or(&0)
     }
 
     /// Where the store is.
@@ -206,6 +214,7 @@ impl MaskStore {
         };
         let key = ResolvedKey {
             file: file.clone(),
+            generation: Self::generation(&self.dir),
             settings: settings_key(cutout, aspect, &region_stores, millis),
         };
         if let Some(hit) = resolved_cache()
@@ -233,7 +242,17 @@ impl MaskStore {
             _ => (*auto).clone(),
         };
         let radius = cutout.feather as f32 * painted.width() as f32;
-        let mask = Arc::new(painted.blurred(radius));
+        let refined = if cutout.expansion != 0 || cutout.edge_strength > 0.0 {
+            crate::refine_mask(&painted, crate::SpatialRefinement {
+                expansion: cutout.expansion,
+                edge_strength: cutout.edge_strength as f32,
+                edge_radius: cutout.edge_radius,
+                feather: radius,
+            })
+        } else {
+            painted.blurred(radius)
+        };
+        let mask = Arc::new(refined);
         if let Ok(mut cache) = resolved_cache().lock() {
             cache.put(key, Arc::clone(&mask));
         }
@@ -267,11 +286,12 @@ impl MaskStore {
         let file = mask_file(&self.dir, millis);
         std::fs::write(&file, mask.to_png())
             .map_err(|error| format!("could not write {}: {error}", file.display()))?;
+        let generation = advance(&self.dir);
         if let Err(index) = self.times.binary_search(&millis) {
             self.times.insert(index, millis);
         }
         if let Ok(mut cache) = mask_cache().lock() {
-            cache.put(file, Arc::new(mask.clone()));
+            cache.put((file, generation), Arc::new(mask.clone()));
         }
         Ok(())
     }
@@ -283,12 +303,13 @@ impl MaskStore {
             let file = mask_file(&self.dir, millis);
             let _ = std::fs::remove_file(&file);
             if let Ok(mut cache) = mask_cache().lock() {
-                cache.remove(&file);
+                cache.retain(|key| key.0 != file);
             }
         }
         if let Ok(mut cache) = resolved_cache().lock() {
             cache.retain(|key| !key.file.starts_with(&self.dir));
         }
+        advance(&self.dir);
         self.times.clear();
         let _ = std::fs::remove_file(model_file(&self.dir));
         self.model = None;
@@ -313,6 +334,9 @@ fn settings_key(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (cutout.mode == CutoutMode::Custom).hash(&mut hasher);
     cutout.feather.to_bits().hash(&mut hasher);
+    cutout.expansion.hash(&mut hasher);
+    cutout.edge_strength.to_bits().hash(&mut hasher);
+    cutout.edge_radius.hash(&mut hasher);
     aspect.to_bits().hash(&mut hasher);
     if cutout.mode == CutoutMode::Custom {
         for stroke in &cutout.strokes {
@@ -331,6 +355,7 @@ fn settings_key(
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ResolvedKey {
     file: PathBuf,
+    generation: u64,
     settings: u64,
 }
 
@@ -375,8 +400,22 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> Recent<K, V> {
     }
 }
 
-fn mask_cache() -> &'static Mutex<Recent<PathBuf, Arc<Mask>>> {
-    static CACHE: OnceLock<Mutex<Recent<PathBuf, Arc<Mask>>>> = OnceLock::new();
+fn generations() -> &'static Mutex<HashMap<PathBuf, u64>> {
+    static GENERATIONS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+    GENERATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn advance(dir: &Path) -> u64 {
+    let mut generations = generations().lock().unwrap_or_else(|p| p.into_inner());
+    for parent in dir.ancestors() {
+        let generation = generations.entry(parent.to_path_buf()).or_default();
+        *generation = generation.wrapping_add(1);
+    }
+    generations[dir]
+}
+
+fn mask_cache() -> &'static Mutex<Recent<(PathBuf, u64), Arc<Mask>>> {
+    static CACHE: OnceLock<Mutex<Recent<(PathBuf, u64), Arc<Mask>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(Recent::new()))
 }
 
@@ -387,17 +426,18 @@ fn resolved_cache() -> &'static Mutex<Recent<ResolvedKey, Arc<Mask>>> {
 
 /// The mask in `file`, from memory when it has been read before.
 fn load(file: &Path) -> Option<Arc<Mask>> {
+    let key = (file.to_path_buf(), MaskStore::generation(file.parent()?));
     if let Some(hit) = mask_cache()
         .lock()
         .ok()
-        .and_then(|cache| cache.get(&file.to_path_buf()))
+        .and_then(|cache| cache.get(&key))
     {
         return Some(hit);
     }
     let bytes = std::fs::read(file).ok()?;
     let mask = Arc::new(Mask::from_png(&bytes)?);
     if let Ok(mut cache) = mask_cache().lock() {
-        cache.put(file.to_path_buf(), Arc::clone(&mask));
+        cache.put(key, Arc::clone(&mask));
     }
     Some(mask)
 }
@@ -476,6 +516,12 @@ mod tests {
             mode: CutoutMode::Custom,
             subject: Subject::Auto,
             feather: 0.0,
+            expansion: 0,
+            edge_strength: 0.0,
+            edge_radius: 0,
+            background_mode: 0,
+            background_blur: 0.0,
+            background_color: 0,
             strokes: vec![Stroke {
                 at: None,
                 tool: BrushTool::Brush,
@@ -509,6 +555,12 @@ mod tests {
             mode: CutoutMode::Custom,
             subject: Subject::Auto,
             feather: 0.0,
+            expansion: 0,
+            edge_strength: 0.0,
+            edge_radius: 0,
+            background_mode: 0,
+            background_blur: 0.0,
+            background_color: 0,
             strokes: vec![Stroke {
                 at: None,
                 tool: BrushTool::Brush,

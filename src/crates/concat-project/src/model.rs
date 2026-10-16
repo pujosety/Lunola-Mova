@@ -425,6 +425,24 @@ pub struct Cutout {
     /// How far the edge is softened, as a fraction of the picture's width.
     #[serde(default = "default_feather")]
     pub feather: f64,
+    /// Signed grow/shrink radius in source mask pixels, -4096..=4096.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub expansion: i32,
+    /// Soft-alpha refinement blend, 0..=1. Zero preserves legacy masks.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub edge_strength: f64,
+    /// Local refinement radius in mask pixels, 0..=8; zero bypasses.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub edge_radius: u32,
+    /// What happens to the background: 0 transparent, 1 blurred, 2 replaced.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub background_mode: u8,
+    /// Blur radius for background_mode=1, as a fraction of picture width.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub background_blur: f64,
+    /// Replacement colour for background_mode=2, 0xRRGGBB.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub background_color: u32,
     /// Corrections painted on the monitor, in the order they were made.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strokes: Vec<Stroke>,
@@ -513,6 +531,11 @@ pub const MIN_BRUSH: f64 = 0.005;
 /// See [`MIN_BRUSH`].
 pub const MAX_BRUSH: f64 = 0.5;
 
+fn is_zero_i32(value: &i32) -> bool { *value == 0 }
+fn is_zero_u32(value: &u32) -> bool { *value == 0 }
+fn is_zero_u8(value: &u8) -> bool { *value == 0 }
+fn is_zero_f64(value: &f64) -> bool { *value == 0.0 }
+
 fn default_feather() -> f64 {
     DEFAULT_FEATHER
 }
@@ -524,6 +547,12 @@ impl Cutout {
             mode: CutoutMode::Auto,
             subject: Subject::Auto,
             feather: DEFAULT_FEATHER,
+            expansion: 0,
+            edge_strength: 0.0,
+            edge_radius: 0,
+            background_mode: 0,
+            background_blur: 0.0,
+            background_color: 0,
             strokes: Vec::new(),
         }
     }
@@ -535,6 +564,15 @@ impl Cutout {
             self.feather.clamp(0.0, MAX_FEATHER)
         } else {
             DEFAULT_FEATHER
+        };
+        self.expansion = self.expansion.clamp(-4096, 4096);
+        self.edge_strength = if self.edge_strength.is_finite() { self.edge_strength.clamp(0.0, 1.0) } else { 0.0 };
+        self.edge_radius = self.edge_radius.min(8);
+        self.background_mode = self.background_mode.min(2);
+        self.background_blur = if self.background_blur.is_finite() {
+            self.background_blur.clamp(0.0, 0.5)
+        } else {
+            0.0
         };
         self.strokes = self.strokes.into_iter().filter_map(Stroke::tidy).collect();
         self

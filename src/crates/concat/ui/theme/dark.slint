@@ -43,9 +43,8 @@
 //
 // ── the palette ──────────────────────────────────────────────────────────────
 //
-// The surfaces are a flat neutral grey scale with no blue cast. A tinted
-// ground competes with everything placed on it; a neutral one lets the accent
-// and the clip hues carry all of the colour in the window.
+// Lunola's surfaces carry a restrained plum cast. Keep the ladder distinct
+// and the monitor neutral; purple belongs to UI actions, not the footage.
 //
 // The clip and media-kind hues and the meter ramp name things the engine and
 // the project format also name, so they are fixed by what they mean rather
@@ -79,12 +78,12 @@ export global Dark {
     // separating a pane from the ground; without one the value step has to do
     // all of it, and a darker ladder leaves the panes reading as holes in the
     // window rather than as surfaces on it.
-    out property <color> panel: #212123;
-    out property <color> raised: #2b2b2e;
-    out property <color> well: #19191b;
-    out property <color> field: #323235;
-    out property <color> field-hover: #3b3b3e;
-    out property <color> field-active: #46464a;
+    out property <color> panel: #1f1927;
+    out property <color> raised: #231c2d;
+    out property <color> well: #17121f;
+    out property <color> field: #2b2235;
+    out property <color> field-hover: #34293f;
+    out property <color> field-active: #3e314b;
 
     // the launch screen's own ladder — a deeper cut of the one above
     //
@@ -94,31 +93,30 @@ export global Dark {
     // a panel, and nothing on screen that has to be told from four other
     // surfaces at a glance. What there is instead is one card, one rail and
     // a great deal of air — which is exactly the arrangement a near-black
-    // ground flatters, and the one the website opens on.
+    // ground flatters. Lunola's supplied artwork keeps that same dark ground.
     //
     // Same five steps in the same order, so every rule written above still
     // reads: `launch-well` is sunken under the card, `launch-raised` is the
     // lift a hover gives, `launch-field` is a chip that is the answer. Only
     // the whole ladder has moved down.
-    out property <color> launch-page: #0e0e10;
-    out property <color> launch-panel: #161619;
-    out property <color> launch-well: #101013;
-    out property <color> launch-raised: #1e1e22;
-    out property <color> launch-field: #26262b;
-    out property <color> launch-field-active: #313138;
+    out property <color> launch-page: #100d17;
+    out property <color> launch-panel: #1b1524;
+    out property <color> launch-well: #14101c;
+    out property <color> launch-raised: #211a2c;
+    out property <color> launch-field: #2b2235;
+    out property <color> launch-field-active: #352a41;
 
     // hairlines — white-alpha, so they hold on panel, well, and ground alike.
     out property <color> line: #ffffff1a;         // rgb(255 255 255 / 0.1)
     out property <color> line-strong: #ffffff33;  // rgb(255 255 255 / 0.2)
 
     // text
-    out property <color> fg: #f5f5f7;
-    out property <color> fg-muted: #a1a1a6;
-    out property <color> fg-dim: #6e6e73;
+    out property <color> fg: #f7f2fc;
+    out property <color> fg-muted: #c0b7cd;
+    out property <color> fg-dim: #aba1b7;
     // One step past `fg`, away from the ground: pure white here, pure black
-    // on the light palette. For the one button whose fill *is* the ink —
-    // the launch screen's Create — where hover has to mean more contrast
-    // and there is no surface left above `fg` to go to.
+    // on the light palette. Retain the shared extreme-ink token; Lunola's
+    // primary actions use the chosen accent and paired ink instead.
     out property <color> fg-hot: #ffffff;
 
     // accents
@@ -127,7 +125,7 @@ export global Dark {
     // every activated tool, and both are the accent.
     //
     // Six to choose from, and Settings › Appearance picks one. The first,
-    // lime, is the default. Each is legible against near-black and
+    // lime, keeps its stored identity; violet is the Lunola default. Each is legible against near-black and
     // near-white alike, which is what a selection has to be: it lands on
     // whatever happens to be underneath it. What sits *on* them therefore
     // has to be dark ink, and is fixed with it: `on` is a deep shade of the
@@ -138,7 +136,7 @@ export global Dark {
     out property <[Accent]> accents: [
         { accent: #cbf53f, hover: #d9ff63, soft: #cbf53f33, on: #15220a },   // lime
         { accent: #5fb8ff, hover: #82c9ff, soft: #5fb8ff33, on: #061c33 },   // sky
-        { accent: #b394ff, hover: #c6b0ff, soft: #b394ff33, on: #1d0f3d },   // violet
+        { accent: #b65cf2, hover: #cf85ff, soft: #b65cf233, on: #20112d },   // violet / Lunola electric purple
         { accent: #ff6fa3, hover: #ff8fb8, soft: #ff6fa333, on: #38091c },   // rose
         { accent: #ffb340, hover: #ffc46a, soft: #ffb34033, on: #2d1a00 },   // amber
         { accent: #3fdcc4, hover: #6ae7d4, soft: #3fdcc433, on: #05261f },   // mint
@@ -303,6 +301,6 @@ export global Dark {
 
     // window ground the panes float on — a shade under the darkest panel so
     // the gutters read as gaps and not as seams
-    out property <color> page: #151517;
-    out property <color> page-fg-muted: #a1a1a6;
+    out property <color> page: #100d17;
+    out property <color> page-fg-muted: #c0b7cd;
 }

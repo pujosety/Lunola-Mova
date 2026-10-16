@@ -66,11 +66,11 @@ export {
 }
 
 export component App inherits Window {
-    title: "Concat";
+    title: "Lunola Mova";
     // The taskbar's and Alt-Tab's picture on Windows, and the window
     // list's on X11. A Mac takes its Dock icon from the bundle and ignores
     // this; the .exe's own, for Explorer, is embedded by build.rs.
-    icon: @image-url("../../../../assets/icons/concat_logo_256.png");
+    icon: @image-url("../../../../assets/lunola/icon-256.png");
     // Where the strip carries its own window buttons the platform's
     // decorations are not wanted, and this is the property Slint keeps
     // them off with: the winit backend re-applies `no-frame` to the
@@ -117,7 +117,8 @@ export component App inherits Window {
     }
     property <bool> sheet-open: root.export.open || root.settings.open
         || root.project-sheet.open || root.captions.open || root.speech.open
-        || root.start.composing;
+        || root.start.composing || root.confirm.open || root.relink.open
+        || root.open-menu >= 0;
     changed sheet-open => {
         if (!root.sheet-open) {
             keys.focus();
@@ -221,6 +222,7 @@ export component App inherits Window {
 
     callback export-closed();
     callback export-name-edited(name: string);
+    callback export-format-changed(index: int);
     callback export-browse();
     callback export-resolution-changed(index: int);
     callback export-rate-changed(index: int);
@@ -570,6 +572,14 @@ export component App inherits Window {
             // B is the razor: the split tool, on and off, the key every
             // editor cuts with. The chord B above splits at the playhead.
             // https://github.com/jub0t/Concat/issues/241
+            // Premiere-style plain Q/W. Ctrl+Q/W retain quit/close above;
+            // fields consume their letters before this scope is reached.
+            if ((letter == "q" || letter == "w")
+                && (root.sheet-open || root.confirm.open || root.relink.open || root.open-menu >= 0)) {
+                return reject;
+            }
+            if (letter == "q") { Editor.shortcut("ripple-trim-start"); return accept; }
+            if (letter == "w") { Editor.shortcut("ripple-trim-end"); return accept; }
             if (letter == "b") { Editor.shortcut("split-tool"); return accept; }
             if (letter == "n") { Editor.shortcut("snap"); return accept; }
             if (letter == "s") { Editor.shortcut("preview-axis"); return accept; }
@@ -713,6 +723,7 @@ export component App inherits Window {
 
         closed => { root.export-closed(); }
         name-edited(name) => { root.export-name-edited(name); }
+        format-changed(index) => { root.export-format-changed(index); }
         browse => { root.export-browse(); }
         resolution-changed(index) => { root.export-resolution-changed(index); }
         rate-changed(index) => { root.export-rate-changed(index); }

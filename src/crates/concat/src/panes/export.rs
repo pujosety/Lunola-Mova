@@ -35,6 +35,8 @@ pub enum ExportMsg {
     /// The sheet is dismissed.
     Close,
     NameEdited(String),
+    /// Choose between a movie file and an alpha-preserving PNG folder.
+    FormatChanged(i32),
     ResolutionChanged(i32),
     RateChanged(i32),
     QualityChanged(i32),
@@ -81,6 +83,8 @@ pub struct ExportPane {
     pub open: bool,
     pub name: String,
     pub folder: String,
+    /// 0 = Movie, 1 = PNG sequence.
+    pub format: usize,
     pub resolution: usize,
     pub rate: usize,
     pub quality: usize,
@@ -116,6 +120,7 @@ impl Default for ExportPane {
             open: false,
             name: "Untitled".into(),
             folder: home_folder("Movies"),
+            format: 0,
             resolution: 2,
             rate: 0,
             quality: 1,
@@ -154,6 +159,7 @@ impl ExportPane {
             }
             ExportMsg::Close => self.open = false,
             ExportMsg::NameEdited(name) => self.name = name,
+            ExportMsg::FormatChanged(index) => self.format = index.clamp(0, 1) as usize,
             ExportMsg::ResolutionChanged(index) => {
                 // Only the timeline's own rung is taken; the sheet greys the
                 // rest, and this is the same rule for a caller that did not.
@@ -444,8 +450,13 @@ impl ExportPane {
             self.message = t("export.nameNeedsToBeAFileName");
             return;
         };
-        let output = format!("{}/{name}.mp4", self.folder.trim_end_matches('/'));
-        // A file already there is replaced once the person has said so:
+        let extension = if self.format == 1 { "" } else { ".mp4" };
+        let output = format!(
+            "{}{}/{name}{extension}",
+            self.folder.trim_end_matches('/'),
+            if self.folder.ends_with('/') { "" } else { "/" }
+        );
+        // A file or sequence directory already there is replaced only after confirmation.
         // the confirmation sheet asks, and its answer comes back as
         // `Overwrite`. Nothing is written until then; the engine renders
         // beside the file and renames over it at the end.
@@ -466,6 +477,11 @@ impl ExportPane {
         };
         let spec = ExportSpec {
             output: output.clone(),
+            format: if self.format == 1 {
+                export::ExportFormat::PngSequence
+            } else {
+                export::ExportFormat::Movie
+            },
             crf: EXPORT_CRF[self.quality.min(2)],
             preset: "veryfast".into(),
             codec: self.codec(studio),
@@ -513,7 +529,7 @@ impl ExportPane {
         // chips took the whole app down at the first frame with nothing in
         // the log (issue #202). None without a GPU here, and the render then
         // opens what it can.
-        let compositor = studio.host.monitor.sibling();
+        let compositor = studio.host.monitor.off_thread();
         spawn(
             move || {
                 let job = job;
@@ -553,15 +569,25 @@ impl ExportPane {
         ExportData {
             open: self.open,
             name: self.name.as_str().into(),
+            output_kind: self.format as i32,
+            output_kinds: ModelRc::new(VecModel::from(vec![
+                t("export.movie").into(),
+                t("export.pngSequence").into(),
+            ])),
             // Where the file ends up: on a phone, the folder its gallery
             // shows, not the app's own that the export writes into.
             // The name as it will be written: trimmed, as `begin` trims it.
             path: match platform::published_folder() {
-                Some(folder) => format!("{folder}/{}.mp4", self.name.trim()),
+                Some(folder) => format!(
+                    "{folder}/{}{}",
+                    self.name.trim(),
+                    if self.format == 1 { "/" } else { ".mp4" }
+                ),
                 None => format!(
-                    "{}/{}.mp4",
+                    "{}/{}{}",
                     self.folder.trim_end_matches('/'),
-                    self.name.trim()
+                    self.name.trim(),
+                    if self.format == 1 { "/" } else { ".mp4" }
                 ),
             }
             .into(),

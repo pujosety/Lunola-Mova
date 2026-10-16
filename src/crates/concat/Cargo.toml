@@ -5,17 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Concat, the editor window: the Slint front end that drives the engine."
+description = "Lunola Mova, the editor window powered by the Concat engine."
 
-# The product's name is the binary's name, unsuffixed: `concat` is what a
-# user launches, and the concat-* crates are what it is made of. The window
+# The public launcher is `lunola-mova`; package/library `concat` and the
+# concat-* engine crates retain their compatibility identities. The window
 # itself is the library, so that the binary here and the Android activity
 # in concat-android are each a few lines over the same code.
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
-name = "concat"
+name = "lunola-mova"
 path = "src/main.rs"
 
 # Slint is taken under its GPL-3.0-only option to sit beside the AGPL engine.

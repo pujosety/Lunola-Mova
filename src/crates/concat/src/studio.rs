@@ -46,7 +46,8 @@ use concat_project::{Command, why_not_merge};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::dock::{
-    Dock, DockLayout, SEAT_GAP, default_dock, lay_out, nearest_row, row_at, row_top,
+    Dock, DockLayout, SEAT_GAP, SavedWorkspace, compact_dock, default_dock, default_docks_for,
+    lay_out, nearest_row, row_at, row_top,
 };
 use crate::format::{
     WAVE_BAR, WAVE_PITCH, colour_of, frames_timecode, hex_of, hex_rgba, hex_with_alpha,
@@ -380,7 +381,6 @@ pub enum Gesture {
         edge: Edge,
         start: f32,
         duration: f32,
-        source_start: f32,
     },
     /// Dragging a transition's duration handle on the timeline.
     TransitionResize {
@@ -534,9 +534,55 @@ pub struct DropPlan {
     pub label: String,
     /// The bin's media id, for a clip cut from a file. Empty for a title.
     pub media: String,
+    /// Additional visible, selected media to place after the lead item.
+    pub batch_media: Vec<String>,
     pub start: f32,
     pub duration: f32,
     pub row: i32,
+}
+
+/// Build the media commands in selection order. The engine's AddClip batch
+/// keeps these placements as one atomic undo step.
+fn media_batch_commands(
+    project: &Project,
+    ids: &[String],
+    track_id: &str,
+    start: f64,
+    locked_tracks: &[String],
+) -> Option<Vec<Command>> {
+    if ids.is_empty() || !start.is_finite() {
+        return None;
+    }
+    let mut at = start.max(0.0);
+    let mut commands = Vec::with_capacity(ids.len());
+    for id in ids {
+        let item = project.media_by_id(id)?;
+        let command = if item.kind == model::MediaKind::Video {
+            Command::AddClipWithAudio {
+                media_id: id.clone(),
+                track_id: Some(track_id.to_owned()),
+                start: at,
+                ripple: true,
+                locked_tracks: locked_tracks.to_vec(),
+            }
+        } else {
+            Command::AddClip {
+                media_id: id.clone(),
+                track_id: track_id.to_owned(),
+                start: at,
+                ripple: true,
+            }
+        };
+        commands.push(command);
+        // Match the engine's clip-length rule: stills and unknown-duration
+        // media hold for five seconds; video/audio use their probed duration.
+        at += if item.kind == model::MediaKind::Image {
+            5.0
+        } else {
+            item.duration.unwrap_or(5.0)
+        };
+    }
+    Some(commands)
 }
 
 /// Every model the window is handed, kept for its lifetime rather than
@@ -813,6 +859,8 @@ pub struct Studio {
     pub compact: bool,
     pub workspace: (f32, f32),
     pub divider_press: Option<(usize, f32, f32)>,
+    /// Debounced settings write while a workspace splitter is being dragged.
+    workspace_save_timer: slint::Timer,
     pub gesture: Gesture,
     /// The snap lines of a stage move in flight; empty between moves.
     pub stage_guides: Vec<StageGuideData>,
@@ -1981,6 +2029,11 @@ impl Studio {
         let languages = i18n::languages(&host.dirs);
         let recents = projects::list(&host.dirs.config);
         let text_presets = presets::all(&host.dirs);
+        let (dock, dock_aside) = prefs
+            .workspace_layout
+            .as_ref()
+            .and_then(SavedWorkspace::into_docks)
+            .unwrap_or_else(|| (default_dock(), compact_dock()));
         let mut studio = Self {
             prefs,
             library: Default::default(),
@@ -2027,11 +2080,12 @@ impl Studio {
             posters: HashMap::new(),
             posters_pending: HashSet::new(),
             project_name: "Untitled project".into(),
-            dock: default_dock(),
-            dock_aside: crate::dock::compact_dock(),
+            dock,
+            dock_aside,
             compact: false,
             workspace: (0.0, 0.0),
             divider_press: None,
+            workspace_save_timer: slint::Timer::default(),
             gesture: Gesture::None,
             stage_guides: Vec::new(),
             inspector_jump: (0, "", ""),
@@ -2775,6 +2829,13 @@ impl Studio {
     /// lets it, which is the default, so the ruler can be clicked beyond the
     /// last clip and something placed at the playhead there.
     pub fn seek(&mut self, seconds: f32) {
+        // Explicit seeks/edits take ownership from hover preview. A pending
+        // audio burst must not restore the pre-edit cursor afterward.
+        let was_hovering = self.hover.take().is_some();
+        self.hover_hush.stop();
+        if was_hovering && !self.playing {
+            self.host.playback.pause();
+        }
         // The timeline was clicked: it has the monitor back.
         self.close_source();
         self.playhead = seconds.max(0.0);
@@ -2789,8 +2850,8 @@ impl Studio {
 
     // ── the preview axis ──
 
-    /// The instant the monitor shows: the pointer's while it crosses the
-    /// lanes with the preview axis on, else the playhead's.
+    /// The instant the monitor shows. Timeline hover and the main cursor
+    /// are synchronised; a bin source keeps its own preview clock.
     pub fn preview_time(&self) -> f32 {
         if let Some(source) = self.source.as_ref() {
             return source.time as f32;
@@ -2801,20 +2862,27 @@ impl Studio {
     /// The pointer is over the lanes at `seconds`. Nothing while playing -
     /// the transport owns the monitor then - and nothing with the axis off.
     pub fn hover(&mut self, seconds: f32) {
-        if !self.prefs.preview_axis || self.playing {
+        if !self.prefs.preview_axis || self.playing || !seconds.is_finite() {
             return;
         }
-        let seconds = seconds.max(0.0);
-        if self.hover == Some(seconds) {
+        let end = self.duration();
+        let source_was_open = self.source.is_some();
+        self.close_source();
+        let moved = crate::timeline_cursor::scrub(
+            &mut self.playhead,
+            &mut self.hover,
+            seconds,
+            end,
+            self.prefs.playhead_stops_at_end,
+        );
+        if !moved && !source_was_open {
             return;
         }
-        self.hover = Some(seconds);
+        let seconds = self.playhead;
         if self.prefs.preview_axis_audio {
-            // A burst of the sound under the pointer: the engine plays from
-            // there and is stopped a beat later, then put back where the
-            // playhead is, so the next Play starts where the cut says.
+            // A burst of the sound under the pointer. Resume from the latest
+            // main cursor, never a position captured before a Q/W edit.
             self.host.playback.play(f64::from(seconds));
-            let playhead = f64::from(self.playhead);
             self.hover_hush.start(
                 slint::TimerMode::SingleShot,
                 std::time::Duration::from_millis(120),
@@ -2823,7 +2891,7 @@ impl Studio {
                         let studio = shell.studio.borrow();
                         if !studio.playing {
                             studio.host.playback.pause();
-                            studio.host.playback.seek(playhead);
+                            studio.host.playback.seek(f64::from(studio.playhead));
                         }
                     });
                 },
@@ -2836,6 +2904,11 @@ impl Studio {
     /// playhead's again.
     pub fn end_hover(&mut self) {
         if self.hover.take().is_some() {
+            self.hover_hush.stop();
+            if !self.playing {
+                self.host.playback.pause();
+                self.host.playback.seek(f64::from(self.playhead));
+            }
             self.request_preview();
         }
     }
@@ -3266,9 +3339,20 @@ impl Studio {
 
     // ── placing things ──
 
-    /// What a library payload names - "media:12", "text:default:Title" -
-    /// before the timeline has decided where to put it.
+    /// What a library payload names - "media:12", "media-selection",
+    /// "text:default:Title" - before the timeline has decided where to put it.
     pub fn incoming(&self, payload: &str) -> Option<DropPlan> {
+        if payload == "media-selection" {
+            let ids = self.media.selected_visible_ids(self.project());
+            let first = ids.first()?;
+            let row = self.media.row_of(first)?;
+            let mut plan = self.incoming(&format!("media:{row}"))?;
+            if ids.len() > 1 {
+                plan.label = format!("{} +{}", plan.label, ids.len() - 1);
+                plan.batch_media = ids;
+            }
+            return Some(plan);
+        }
         let mut fields = payload.splitn(3, ':');
         let (sort, id) = (fields.next()?, fields.next()?);
         let label = fields.next().unwrap_or(id);
@@ -3283,6 +3367,7 @@ impl Studio {
                     },
                     label: item.name.clone(),
                     media: item.id.clone(),
+                    batch_media: Vec::new(),
                     start: 0.0,
                     // A still has no length of its own; a file with no stated
                     // duration gets the engine's own fallback.
@@ -3301,6 +3386,7 @@ impl Studio {
                 kind: ClipKind::Text,
                 label: label.to_owned(),
                 media: id.to_owned(),
+                batch_media: Vec::new(),
                 start: 0.0,
                 duration: LAYER_DURATION,
                 row: 0,
@@ -3312,6 +3398,7 @@ impl Studio {
                 kind: ClipKind::Shape,
                 label: label.to_owned(),
                 media: model::ShapeKind::parse(id)?.id().to_owned(),
+                batch_media: Vec::new(),
                 start: 0.0,
                 duration: LAYER_DURATION,
                 row: 0,
@@ -3322,6 +3409,7 @@ impl Studio {
                 kind: ClipKind::Filter,
                 label: label.to_owned(),
                 media: id.to_owned(),
+                batch_media: Vec::new(),
                 start: 0.0,
                 duration: LAYER_DURATION,
                 row: 0,
@@ -3352,6 +3440,10 @@ impl Studio {
 
     /// Commits a plan that has a lane, and selects what it made.
     pub fn place(&mut self, plan: &DropPlan) {
+        if !plan.batch_media.is_empty() {
+            self.place_media_batch(plan);
+            return;
+        }
         let Some(track_id) = self.row_track(plan.row).map(|track| track.id.clone()) else {
             return;
         };
@@ -3379,15 +3471,73 @@ impl Studio {
                 name: plan.label.clone(),
             })
         } else {
-            self.apply(Command::AddClip {
-                media_id: plan.media.clone(),
-                track_id,
-                start: f64::from(plan.start),
-                ripple: true,
-            })
+            if plan.kind == ClipKind::Video {
+                self.apply(Command::AddClipWithAudio {
+                    media_id: plan.media.clone(),
+                    track_id: Some(track_id),
+                    start: f64::from(plan.start),
+                    ripple: true,
+                    locked_tracks: self
+                        .timeline()
+                        .tracks
+                        .iter()
+                        .filter(|track| self.locked(&track.id))
+                        .map(|track| track.id.clone())
+                        .collect(),
+                })
+            } else {
+                self.apply(Command::AddClip {
+                    media_id: plan.media.clone(),
+                    track_id,
+                    start: f64::from(plan.start),
+                    ripple: true,
+                })
+            }
         };
         if let Some(id) = created {
             self.selection = vec![id];
+        }
+    }
+
+    fn place_media_batch(&mut self, plan: &DropPlan) {
+        let Some(track_id) = self.row_track(plan.row).map(|track| track.id.clone()) else {
+            return;
+        };
+        if self.locked(&track_id) {
+            return;
+        }
+        let locked_tracks = self
+            .timeline()
+            .tracks
+            .iter()
+            .filter(|track| self.locked(&track.id))
+            .map(|track| track.id.clone())
+            .collect::<Vec<_>>();
+        let Some(commands) = media_batch_commands(
+            self.project(),
+            &plan.batch_media,
+            &track_id,
+            f64::from(plan.start),
+            &locked_tracks,
+        ) else {
+            return;
+        };
+        let before: HashSet<String> = self
+            .timeline()
+            .clips
+            .iter()
+            .map(|clip| clip.id.clone())
+            .collect();
+        self.apply(Command::Batch { commands });
+        let created: Vec<String> = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| !before.contains(&clip.id))
+            .map(|clip| clip.id.clone())
+            .collect();
+        if !created.is_empty() {
+            self.selection = created;
         }
     }
 
@@ -3417,10 +3567,26 @@ impl Studio {
                 name: plan.label.clone(),
             })
         } else {
-            self.apply(Command::AddClipAtFirstFree {
-                media_id: plan.media.clone(),
-                start,
-            })
+            if plan.kind == ClipKind::Video {
+                self.apply(Command::AddClipWithAudio {
+                    media_id: plan.media.clone(),
+                    track_id: None,
+                    start,
+                    ripple: self.prefs.magnetic,
+                    locked_tracks: self
+                        .timeline()
+                        .tracks
+                        .iter()
+                        .filter(|track| self.locked(&track.id))
+                        .map(|track| track.id.clone())
+                        .collect(),
+                })
+            } else {
+                self.apply(Command::AddClipAtFirstFree {
+                    media_id: plan.media.clone(),
+                    start,
+                })
+            }
         };
         if let Some(id) = created {
             self.selection = vec![id];
@@ -4188,19 +4354,22 @@ impl Studio {
                 edge: if edge == 0 { Edge::Start } else { Edge::End },
                 start: clip.start as f32,
                 duration: clip.duration as f32,
-                source_start: clip.source_start as f32,
             };
             return;
         }
-        // What moves is what is selected, and nothing else. A detached
-        // sound is a clip of its own: it goes where it is dragged, and its
-        // picture stays, as any two clips do. It used to travel with its
-        // picture, which made Detach a split in name only (#265); the link
-        // between them is kept for Reattach, not for the drag.
+        // Legacy detached sound remains independent (#265). Only explicit
+        // Lunola AV groups expand timing gestures to aligned partners.
         let moving = if self.selection.iter().any(|held| held == id) {
             self.selection.clone()
         } else {
             vec![id.to_owned()]
+        };
+        let Some(moving) =
+            crate::timeline_av::targets(self.timeline(), &moving, |track| self.locked(track))
+        else {
+            self.echo = None;
+            self.gesture = Gesture::None;
+            return;
         };
         let origins = moving
             .iter()
@@ -4285,57 +4454,54 @@ impl Studio {
                 edge,
                 start,
                 duration,
-                source_start,
+                ..
             } => {
                 let (id, edge) = (clip.clone(), *edge);
-                let (start, duration, source_start) = (*start, *duration, *source_start);
                 let threshold = 8.0 * self.lanes.seconds_per_pixel;
-                let speed = self.clip(&id).map_or(1.0, |clip| clip.speed as f32);
-                // A plain trim stops at the neighbours, as the command will;
-                // a magnetic one moves them, so the lane is all its room.
-                let (floor, ceiling) = if self.prefs.magnetic {
-                    (0.0, f32::INFINITY)
-                } else {
-                    self.timeline()
-                        .room_around(&id)
-                        .map_or((0.0, f32::INFINITY), |(before, after)| {
-                            (before as f32, after as f32)
-                        })
+                let wanted = match edge {
+                    Edge::Start => self.snapped(*start + seconds, threshold, &id) - *start,
+                    Edge::End => {
+                        self.snapped(*start + *duration + seconds, threshold, &id)
+                            - *start
+                            - *duration
+                    }
                 };
-                if edge == Edge::Start {
-                    // The head cannot pass the tail, and cannot pull material
-                    // out of a file that has none before the in-point.
-                    let wanted = self.snapped(start + seconds, threshold, &id);
-                    let limit = start + duration - MIN_DURATION;
-                    let at = wanted.clamp(
-                        (start - source_start / speed.max(0.01))
-                            .max(floor)
-                            .min(limit),
-                        limit,
+                if let Some(session) = self.session.as_ref() {
+                    let mut preview = session.project().clone();
+                    let command = crate::timeline_av::trim_plan(
+                        preview.active(),
+                        &id,
+                        if edge == Edge::Start {
+                            TrimEdge::Start
+                        } else {
+                            TrimEdge::End
+                        },
+                        f64::from(wanted),
+                        self.prefs.magnetic,
+                        |track| self.locked(track),
                     );
-                    let delta = at - start;
-                    if let Some(clip) = self.echo_clip_mut(&id) {
-                        clip.start = f64::from(at);
-                        clip.duration = f64::from(duration - delta);
-                        clip.source_start = f64::from(source_start + delta * speed);
+                    if let Some(command) = command {
+                        if let Err(error) = concat_project::commands::apply(
+                            &mut preview,
+                            &mut concat_project::commands::IdMint::default(),
+                            command,
+                        ) {
+                            log::warn!("AV trim preview: {error}");
+                        }
                     }
-                    // Trim follow: the playhead on the new first frame.
+                    let follow = preview.active().clip(&id).map(|clip| {
+                        if edge == Edge::Start {
+                            clip.start as f32
+                        } else {
+                            ((clip.start + clip.duration) as f32 - 1.0 / self.frame_rate().max(1.0))
+                                .max(clip.start as f32)
+                        }
+                    });
+                    self.echo = Some(preview);
                     if self.prefs.trim_follow {
-                        self.seek(at);
-                    }
-                } else {
-                    let wanted = self.snapped(start + duration + seconds, threshold, &id);
-                    let at = wanted.min(ceiling).max(start + MIN_DURATION);
-                    if let Some(clip) = self.echo_clip_mut(&id) {
-                        clip.duration = f64::from(at - start);
-                    }
-                    // Trim follow: the playhead on the new last frame, one
-                    // frame inside the edge - at the edge itself the clip
-                    // has already ended and the monitor would show what
-                    // comes after it.
-                    if self.prefs.trim_follow {
-                        let frame = 1.0 / self.frame_rate().max(1.0);
-                        self.seek((at - frame).max(start));
+                        if let Some(at) = follow {
+                            self.seek(at);
+                        }
                     }
                 }
             }
@@ -4402,7 +4568,6 @@ impl Studio {
             Gesture::Trim {
                 clip,
                 edge,
-                start,
                 duration,
                 ..
             } => {
@@ -4410,22 +4575,25 @@ impl Studio {
                 self.echo = None;
                 let Some(after) = after else { return };
                 let delta = match edge {
-                    Edge::Start => after.start - f64::from(start),
+                    Edge::Start => f64::from(duration) - after.duration,
                     Edge::End => after.duration - f64::from(duration),
                 };
                 if delta.abs() > 1e-6 {
                     let id = clip.clone();
-                    self.apply(Command::TrimClip {
-                        clip_id: clip,
-                        edge: match edge {
-                            Edge::Start => TrimEdge::Start,
-                            Edge::End => TrimEdge::End,
+                    if let Some(command) = crate::timeline_av::trim_plan(
+                        self.timeline(),
+                        &clip,
+                        if edge == Edge::Start {
+                            TrimEdge::Start
+                        } else {
+                            TrimEdge::End
                         },
                         delta,
-                        // Magnetic: the lane closes behind the edge.
-                        // https://github.com/jub0t/Concat/issues/106
-                        ripple: self.prefs.magnetic,
-                    });
+                        self.prefs.magnetic,
+                        |track| self.locked(track),
+                    ) {
+                        self.apply(command);
+                    }
                     // Trim follow: a magnetic head trim slides the clip back
                     // into the gap, and the playhead goes with its first
                     // frame.
@@ -4470,11 +4638,66 @@ impl Studio {
 
     // ── the inspector ──
 
+    /// Whether a Cutout inspector edit must be rejected because at least one
+    /// target clip lives on a locked track. Kept pure so the lock contract is
+    /// covered by a unit test as well as the `clip_set` routing check.
+    fn cutout_field_blocked(
+        field: ClipField,
+        ids: &[String],
+        clip_track: impl Fn(&str) -> Option<String>,
+        locked: impl Fn(&str) -> bool,
+    ) -> bool {
+        matches!(
+            field,
+            ClipField::CutoutFeather
+                | ClipField::CutoutBackgroundBlur
+                | ClipField::CutoutExpansion
+                | ClipField::CutoutEdgeStrength
+                | ClipField::CutoutEdgeRadius
+        ) && ids
+            .iter()
+            .any(|id| clip_track(id).is_some_and(|track| locked(&track)))
+    }
+
     /// One field of the selected clip, on the echo. `clip_commit` turns the
     /// accumulated edits into commands.
     pub fn clip_set(&mut self, field: ClipField, value: f32) {
-        let ids = self.edit_targets();
+        let mut ids = self.edit_targets();
+        if field == ClipField::Speed || field == ClipField::Volume {
+            let mut expanded = Vec::new();
+            for id in &ids {
+                let link_timing = field == ClipField::Speed
+                    || self
+                        .clip(id)
+                        .is_some_and(|clip| clip.kind == model::ClipKind::Video);
+                if link_timing {
+                    let Some(group) =
+                        crate::timeline_av::targets(self.timeline(), &[id.clone()], |track| {
+                            self.locked(track)
+                        })
+                    else {
+                        return;
+                    };
+                    for member in group {
+                        if !expanded.contains(&member) {
+                            expanded.push(member);
+                        }
+                    }
+                } else if !expanded.contains(id) {
+                    expanded.push(id.clone());
+                }
+            }
+            ids = expanded;
+        }
         if ids.is_empty() {
+            return;
+        }
+        if Self::cutout_field_blocked(
+            field,
+            &ids,
+            |id| self.clip(id).map(|clip| clip.track_id.clone()),
+            |track| self.locked(track),
+        ) {
             return;
         }
         self.commit_targets = ids.clone();
@@ -4554,6 +4777,26 @@ impl Studio {
                 ClipField::CutoutFeather => {
                     clip.cutout.get_or_insert_with(model::Cutout::auto).feather =
                         value.clamp(0.0, model::MAX_FEATHER);
+                }
+                ClipField::CutoutBackgroundBlur => {
+                    clip.cutout
+                        .get_or_insert_with(model::Cutout::auto)
+                        .background_blur = value.clamp(0.0, 0.5);
+                }
+                ClipField::CutoutExpansion => {
+                    clip.cutout
+                        .get_or_insert_with(model::Cutout::auto)
+                        .expansion = value.clamp(-4096.0, 4096.0).round() as i32;
+                }
+                ClipField::CutoutEdgeStrength => {
+                    clip.cutout
+                        .get_or_insert_with(model::Cutout::auto)
+                        .edge_strength = value.clamp(0.0, 1.0);
+                }
+                ClipField::CutoutEdgeRadius => {
+                    clip.cutout
+                        .get_or_insert_with(model::Cutout::auto)
+                        .edge_radius = value.clamp(0.0, 8.0).round() as u32;
                 }
                 ClipField::Volume => {
                     write_keyable(clip, model::KeyProperty::Volume, value.max(0.0), at)
@@ -6182,36 +6425,33 @@ impl Studio {
         self.notify(&t("studio.enhancedClipNowShows"), false);
     }
 
-    /// The Mode row: 0 off, 1 automatic, 2 custom. The chroma rows are the
-    /// inspector's own business, on the chain.
+    /// One atomic background-removal edit: 0 off, 1 auto, 2 custom, 3 chroma.
     pub fn cutout_mode(&mut self, mode: i32) {
         let Some(id) = self.sole_selection() else {
             return;
         };
-        let Some(clip) = self.clip(&id).cloned() else {
+        let Some(clip) = self.clip(&id) else {
             return;
         };
-        let held = clip.cutout.clone().unwrap_or_else(model::Cutout::auto);
-        let cutout = match mode {
-            1 => Some(model::Cutout {
-                mode: model::CutoutMode::Auto,
-                ..held
-            }),
-            2 => Some(model::Cutout {
-                mode: model::CutoutMode::Custom,
-                ..held
-            }),
-            _ => None,
+        if self.locked(&clip.track_id) {
+            return;
+        }
+        use concat_project::commands::RemovalMode;
+        let removal = match mode {
+            0 => RemovalMode::Off,
+            1 => RemovalMode::Auto,
+            2 => RemovalMode::Custom,
+            3 => RemovalMode::Chroma,
+            _ => return,
         };
-        if mode == 2 {
-            self.painting = true;
-        }
-        if cutout != clip.cutout {
-            self.apply(Command::SetClipCutout {
-                clip_id: id,
-                cutout,
-            });
-        }
+        self.commit_now();
+        self.apply(Command::SetClipRemovalMode {
+            clip_id: id,
+            mode: removal,
+        });
+        self.painting = mode == 2;
+        self.pending_stroke = None;
+        self.request_preview();
     }
 
     /// The name an analysis runs under: the media and what it keeps.
@@ -6240,6 +6480,65 @@ impl Studio {
             clip_id: id,
             cutout: Some(model::Cutout { subject, ..cutout }),
         });
+    }
+
+    /// Background mode: 0 transparent, 1 blurred, 2 replaced.
+    pub fn cutout_background_mode(&mut self, mode: i32) {
+        let Some(id) = self.sole_selection() else {
+            return;
+        };
+        let Some(clip) = self.clip(&id) else {
+            return;
+        };
+        if self.locked(&clip.track_id) {
+            return;
+        }
+        let Some(cutout) = clip.cutout.clone() else {
+            return;
+        };
+        let mode = mode.clamp(0, 2) as u8;
+        if cutout.background_mode == mode {
+            return;
+        }
+        self.apply(Command::SetClipCutout {
+            clip_id: id,
+            cutout: Some(model::Cutout {
+                background_mode: mode,
+                ..cutout
+            }),
+        });
+    }
+
+    /// Background replacement colour as 0xRRGGBB.
+    pub fn cutout_background_color(&mut self, value: slint::Color) {
+        let Some(id) = self.sole_selection() else {
+            return;
+        };
+        let Some(clip) = self.clip(&id) else {
+            return;
+        };
+        if self.locked(&clip.track_id) {
+            return;
+        }
+        let value = (u32::from(value.red()) << 16)
+            | (u32::from(value.green()) << 8)
+            | u32::from(value.blue());
+        if clip
+            .cutout
+            .as_ref()
+            .is_some_and(|cutout| cutout.background_color == value)
+        {
+            return;
+        }
+        self.commit_targets = vec![id.clone()];
+        self.begin_echo();
+        let Some(clip) = self.echo_clip_mut(&id) else {
+            return;
+        };
+        clip.cutout
+            .get_or_insert_with(model::Cutout::auto)
+            .background_color = value;
+        self.clip_commit();
     }
 
     /// Takes every stroke off the selected clip's cutout, keeping it custom.
@@ -6379,7 +6678,13 @@ impl Studio {
     /// Split at `at`: every selected clip the instant runs through, or every
     /// clip at all when nothing is selected.
     pub fn split_at(&mut self, at: f32, only_selected: bool) {
-        let selection = self.selection.clone();
+        let Some(selection) =
+            crate::timeline_av::targets(self.timeline(), &self.selection, |track| {
+                self.locked(track)
+            })
+        else {
+            return;
+        };
         let at = f64::from(at);
         let victims: Vec<String> = self
             .timeline()
@@ -6390,6 +6695,10 @@ impl Studio {
                     && at < clip.start + clip.duration - f64::from(MIN_DURATION)
                     && (!only_selected || selection.is_empty() || selection.contains(&clip.id))
                     && !self.locked(&clip.track_id)
+                    && crate::timeline_av::targets(self.timeline(), &[clip.id.clone()], |track| {
+                        self.locked(track)
+                    })
+                    .is_some()
             })
             .map(|clip| clip.id.clone())
             .collect();
@@ -6588,8 +6897,14 @@ impl Studio {
     }
 
     fn remove_selected(&mut self, ripple: bool) {
-        let doomed: Vec<String> = self
-            .selection
+        let Some(selection) =
+            crate::timeline_av::targets(self.timeline(), &self.selection, |track| {
+                self.locked(track)
+            })
+        else {
+            return;
+        };
+        let doomed: Vec<String> = selection
             .iter()
             .filter(|id| {
                 self.clip(id)
@@ -6717,8 +7032,14 @@ impl Studio {
     /// neighbours do not stack). Falls back to the menu target when the
     /// selection is empty.
     pub fn duplicate_selected(&mut self) {
-        let mut sources: Vec<Clip> = self
-            .selection
+        let Some(selection) =
+            crate::timeline_av::targets(self.timeline(), &self.selection, |track| {
+                self.locked(track)
+            })
+        else {
+            return;
+        };
+        let mut sources: Vec<Clip> = selection
             .iter()
             .filter_map(|id| self.clip(id).cloned())
             .filter(|clip| !self.locked(&clip.track_id))
@@ -6727,8 +7048,12 @@ impl Studio {
         if sources.is_empty() {
             if let Some(id) = self.menu_target.clone() {
                 if let Some(clip) = self.clip(&id).cloned() {
-                    if !self.locked(&clip.track_id) {
-                        sources.push(clip);
+                    if let Some(ids) =
+                        crate::timeline_av::targets(self.timeline(), &[clip.id.clone()], |track| {
+                            self.locked(track)
+                        })
+                    {
+                        sources.extend(ids.iter().filter_map(|id| self.clip(id).cloned()));
                     }
                 }
             }
@@ -6768,6 +7093,9 @@ impl Studio {
         {
             ids = vec![anchor.to_owned()];
         }
+        let Some(ids) = crate::timeline_av::targets(self.timeline(), &ids, |_| false) else {
+            return;
+        };
         let tracks = &self.timeline().tracks;
         let mut held: Vec<Held> = ids
             .iter()
@@ -7407,7 +7735,7 @@ impl Studio {
             return;
         }
         self.cards_busy = true;
-        let compositor = self.host.monitor.sibling();
+        let compositor = self.host.monitor.off_thread();
         let spawned = std::thread::Builder::new()
             .name("concat cards".to_owned())
             .spawn(move || {
@@ -7662,6 +7990,35 @@ impl Studio {
         }
     }
 
+    /// Restores both saved layouts without changing the active display mode.
+    pub fn reset_workspace_layout(&mut self) {
+        (self.dock, self.dock_aside) = default_docks_for(self.compact);
+        self.schedule_workspace_save();
+    }
+
+    /// Debounce settings writes while the user drags a workspace divider.
+    pub fn schedule_workspace_save(&mut self) {
+        self.workspace_save_timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(300),
+            || {
+                crate::host::Shell::with(|shell, _| {
+                    shell.studio.borrow_mut().save_workspace_layout();
+                });
+            },
+        );
+    }
+
+    fn save_workspace_layout(&mut self) {
+        let saved = if self.compact {
+            SavedWorkspace::from_docks(&self.dock_aside, &self.dock)
+        } else {
+            SavedWorkspace::from_docks(&self.dock, &self.dock_aside)
+        };
+        self.prefs.workspace_layout = Some(saved);
+        self.prefs.save(&self.host.dirs);
+    }
+
     pub fn dock_layout(&self) -> DockLayout {
         let mut out = DockLayout::default();
         let (width, height) = self.workspace;
@@ -7701,6 +8058,9 @@ impl Studio {
     /// The timeline and the readouts that follow it: what runs on every
     /// event of a scrub, a drag, a trim or a knob.
     pub fn publish_lanes(&self, app: &App, models: &Models) {
+        // A timeline hover/seek can close the source monitor without a full
+        // workspace republish; keep its small global state in sync too.
+        self.publish_source(app);
         let editor = app.global::<Editor>();
         let project = self.project();
         sync(
@@ -7725,8 +8085,11 @@ impl Studio {
                 .rev()
                 .map(|lane| {
                     let height = self.lane_height(lane);
+                    let (label, audio) = crate::timeline_av::lane_label(timeline, &lane.id);
                     let row = TrackData {
                         id: lane.id.as_str().into(),
+                        label: label.into(),
+                        audio,
                         visible: lane.visible,
                         muted: lane.muted,
                         locked: self.locked(&lane.id),
@@ -7756,12 +8119,13 @@ impl Studio {
                     )
                 })
                 .map(|clip| {
-                    let wave =
-                        if matches!(clip.kind, model::ClipKind::Audio | model::ClipKind::Video) {
-                            self.wave(clip)
-                        } else {
-                            Default::default()
-                        };
+                    let wave = if clip.kind == model::ClipKind::Audio
+                        || (clip.kind == model::ClipKind::Video && clip.muted != Some(true))
+                    {
+                        self.wave(clip)
+                    } else {
+                        Default::default()
+                    };
                     ClipData {
                         id: clip.id.as_str().into(),
                         name: clip.name.as_str().into(),
@@ -9058,11 +9422,61 @@ impl Studio {
                 Some(cutout) if cutout.mode == model::CutoutMode::Auto => 1,
                 Some(_) => 2,
             },
+            removal_keyer_slot: clip
+                .video_effects
+                .iter()
+                .enumerate()
+                .find(|(_, effect)| {
+                    effect.enabled
+                        && matches!(
+                            effect.id.as_str(),
+                            "concat.chroma-key" | "concat.green-screen" | "concat.blue-screen"
+                        )
+                })
+                .and_then(|(index, _)| i32::try_from(index + 1).ok())
+                .unwrap_or(0),
             cutout_feather: clip
                 .cutout
                 .as_ref()
                 .map(|cutout| cutout.feather as f32)
                 .unwrap_or(model::DEFAULT_FEATHER as f32),
+            cutout_background_mode: clip
+                .cutout
+                .as_ref()
+                .map(|cutout| cutout.background_mode as i32)
+                .unwrap_or(0),
+            cutout_background_blur: clip
+                .cutout
+                .as_ref()
+                .map(|cutout| cutout.background_blur as f32)
+                .unwrap_or(0.0),
+            cutout_background_color: clip
+                .cutout
+                .as_ref()
+                .map(|cutout| {
+                    let color = cutout.background_color;
+                    slint::Color::from_rgb_u8(
+                        ((color >> 16) & 0xff) as u8,
+                        ((color >> 8) & 0xff) as u8,
+                        (color & 0xff) as u8,
+                    )
+                })
+                .unwrap_or_else(|| slint::Color::from_rgb_u8(0, 0, 0)),
+            cutout_expansion: clip
+                .cutout
+                .as_ref()
+                .map(|cutout| cutout.expansion as f32)
+                .unwrap_or(0.0),
+            cutout_edge_strength: clip
+                .cutout
+                .as_ref()
+                .map(|cutout| cutout.edge_strength as f32)
+                .unwrap_or(0.0),
+            cutout_edge_radius: clip
+                .cutout
+                .as_ref()
+                .map(|cutout| cutout.edge_radius as f32)
+                .unwrap_or(0.0),
             cutout_strokes: clip
                 .cutout
                 .as_ref()
@@ -9618,6 +10032,25 @@ impl Studio {
             ),
             rule(),
         ];
+        if clip.extra.contains_key("lunolaAvGroup") {
+            let linked = clip
+                .extra
+                .get("lunolaAvLinked")
+                .and_then(|value| value.as_bool())
+                == Some(true);
+            rows.push(action(
+                if linked { "unlink-av" } else { "link-av" },
+                if linked {
+                    t("studio.unlinkAvGroup")
+                } else {
+                    t("studio.linkAvGroup")
+                },
+                Glyph::Merge,
+                "",
+                !locked,
+            ));
+            rows.push(rule());
+        }
         // One slot, two verbs: the sound is either on its picture or off it.
         // Shown on every video clip, so the verb is where a person looks for
         // it, and greyed rather than gone when the file has no sound.
@@ -10015,6 +10448,14 @@ impl Studio {
                 row("zoom-in", t("common.zoomIn"), Glyph::Plus, "+", true),
                 row("zoom-out", t("common.zoomOut"), Glyph::Minus, "-", true),
                 rule(),
+                row(
+                    "reset-workspace-layout",
+                    format!("{} {}", t("settings.default"), t("textPanel.layout")),
+                    Glyph::None,
+                    "",
+                    true,
+                ),
+                rule(),
                 check("sort-added", "Sort by: Added", self.media.sort == 0),
                 check("sort-name", "Sort by: Name", self.media.sort == 1),
                 check("sort-kind", "Sort by: Type", self.media.sort == 2),
@@ -10191,10 +10632,28 @@ impl Studio {
 
     // ── the keyboard, and the menu's verbs ──
 
+    /// Q/W reuse the engine's magnetic trims, with one atomic undo step.
+    fn ripple_trim_at_playhead(&mut self, edge: TrimEdge) {
+        self.flush_commit();
+        let Some((command, at)) = crate::ripple_trim::plan(
+            self.timeline(),
+            &self.selection,
+            f64::from(self.playhead),
+            edge,
+            |track| self.locked(track),
+        ) else {
+            self.notify(&t("studio.rippleTrimUnavailable"), true);
+            return;
+        };
+        if self.playing {
+            self.pause();
+        }
+        self.apply(command);
+        self.seek(at as f32);
+    }
+
     /// A chord from the window's key table; see `Editor.shortcut`. The view
-    /// chords - zoom, the playhead's ends, the sheets - go through the app
-    /// menu's own handler in lib.rs, so a key and the row that advertises
-    /// it are one thing.
+    /// chords go through the app menu's own handler in lib.rs.
     pub fn shortcut(&mut self, action: &str) {
         log::info!("shortcut: {action}");
         match action {
@@ -10224,6 +10683,8 @@ impl Studio {
             }
             // ⇧⌫, from the key table; plain ⌫ comes in as its own callback.
             "ripple-delete" => self.ripple_delete_selected(),
+            "ripple-trim-start" => self.ripple_trim_at_playhead(TrimEdge::Start),
+            "ripple-trim-end" => self.ripple_trim_at_playhead(TrimEdge::End),
             // Copy takes the whole selection; see `copy_clips`.
             "copy" => self.copy_clips(None),
             "duplicate" | "mute" => {
@@ -10349,6 +10810,12 @@ impl Studio {
                 self.inspector_jump = (self.inspector_jump.0 + 1, "Video", "Enhance");
             }
             "export-audio" => self.export_clip_audio(id),
+            "link-av" | "unlink-av" => {
+                self.apply(Command::SetClipAvLinked {
+                    clip_id: id.to_owned(),
+                    linked: action == "link-av",
+                });
+            }
             "detach" => self.detach_audio(&clip),
             "reattach" => {
                 self.apply(Command::ReattachAudio {
@@ -10357,13 +10824,29 @@ impl Studio {
             }
             "mute" => {
                 let volume = if clip.volume <= 0.0 { 1.0 } else { 0.0 };
-                self.apply(Command::UpdateClip {
-                    clip_id: id.to_owned(),
-                    patch: ClipPatch {
-                        volume: Some(volume),
-                        ..Default::default()
-                    },
-                });
+                let mute_ids =
+                    crate::timeline_av::targets(self.timeline(), &[id.to_owned()], |track| {
+                        self.locked(track)
+                    });
+                if let Some(mut ids) = mute_ids {
+                    // A selected audio lane has independent gain; muting a
+                    // linked video also mutes its separated sound.
+                    if clip.kind == model::ClipKind::Audio {
+                        ids = vec![id.to_owned()];
+                    }
+                    self.apply(Command::Batch {
+                        commands: ids
+                            .into_iter()
+                            .map(|clip_id| Command::UpdateClip {
+                                clip_id,
+                                patch: ClipPatch {
+                                    volume: Some(volume),
+                                    ..Default::default()
+                                },
+                            })
+                            .collect(),
+                    });
+                }
             }
             "lock" => self.toggle_lock(&clip.track_id),
             // A clip that is part of the selection takes the selection with
@@ -10373,10 +10856,13 @@ impl Studio {
                 if self.selection.len() > 1 && self.selection.iter().any(|held| held == id) {
                     self.remove_selected(ripple);
                 } else {
-                    self.apply(Command::RemoveClips {
-                        clip_ids: vec![id.to_owned()],
-                        ripple,
-                    });
+                    if let Some(clip_ids) =
+                        crate::timeline_av::targets(self.timeline(), &[id.to_owned()], |track| {
+                            self.locked(track)
+                        })
+                    {
+                        self.apply(Command::RemoveClips { clip_ids, ripple });
+                    }
                 }
                 self.menu_target = None;
             }
@@ -10508,6 +10994,80 @@ mod tests {
         custom_rate, fps_of, grading_rows, home_folder, key_commands, packed, place_in, shown,
         wheel_partners, write_keyable,
     };
+
+    #[test]
+    fn cutout_clip_edit_is_blocked_when_any_target_is_on_a_locked_track() {
+        let ids = ["free", "locked"].map(str::to_owned);
+        let blocked = super::Studio::cutout_field_blocked(
+            super::ClipField::CutoutExpansion,
+            &ids,
+            |id| match id {
+                "free" => Some("video".to_owned()),
+                "locked" => Some("protected".to_owned()),
+                _ => None,
+            },
+            |track| track == "protected",
+        );
+        assert!(blocked);
+    }
+
+    #[test]
+    fn ordinary_clip_edit_is_not_blocked_by_cutout_track_guard() {
+        let ids = ["locked".to_owned()];
+        let blocked = super::Studio::cutout_field_blocked(
+            super::ClipField::Volume,
+            &ids,
+            |_| Some("protected".to_owned()),
+            |track| track == "protected",
+        );
+        assert!(!blocked);
+    }
+
+    #[test]
+    fn selected_media_batch_commands_keep_order_and_place_clips_contiguously() {
+        use concat_project::model::{MediaItem, MediaKind, Project};
+        let project = Project {
+            media: vec![
+                MediaItem {
+                    id: "video".into(),
+                    kind: MediaKind::Video,
+                    duration: Some(2.0),
+                    ..MediaItem::default()
+                },
+                MediaItem {
+                    id: "audio".into(),
+                    kind: MediaKind::Audio,
+                    duration: Some(3.0),
+                    ..MediaItem::default()
+                },
+                MediaItem {
+                    id: "still".into(),
+                    kind: MediaKind::Image,
+                    ..MediaItem::default()
+                },
+            ],
+            ..Project::default()
+        };
+        let ids = ["video", "audio", "still"].map(str::to_owned);
+        let commands = super::media_batch_commands(&project, &ids, "track", 12.0, &[])
+            .expect("all selected media exists");
+        assert_eq!(commands.len(), 3);
+        assert!(matches!(
+            &commands[0],
+            Command::AddClipWithAudio { media_id, start, ripple: true, .. }
+                if media_id == "video" && *start == 12.0
+        ));
+        assert!(matches!(
+            &commands[1],
+            Command::AddClip { media_id, track_id, start, ripple: true }
+                if media_id == "audio" && track_id == "track" && *start == 14.0
+        ));
+        assert!(matches!(
+            &commands[2],
+            Command::AddClip { media_id, track_id, start, ripple: true }
+                if media_id == "still" && track_id == "track" && *start == 17.0
+        ));
+    }
 
     /// A pasted group keeps its shape from `base` on, its rows shifted
     /// and held inside the lanes it lands in, a locked row passed over

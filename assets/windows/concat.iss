@@ -1,26 +1,9 @@
-; Concat's Windows installer.
-;
-; Built by build-app.yml with Inno Setup from the staged folder the .msi
-; is also made of, so the two ship the same files; this is the one a
-; person double-clicks, and it puts Concat in the Start menu and can take
-; it out again. Everything it needs is handed in on the command line:
-;
-;   iscc /DVersion=0.2.7 /DArch=x64compatible /DSuffix=x86_64 ^
-;        /DStage=C:\...\stage\Concat-0.2.7-windows-x86_64 /DOut=C:\...\stage ^
-;        assets\windows\concat.iss
-;
-; Arch is Inno's own word for the machine: x64compatible for the x86_64
-; build (which also installs on ARM PCs, under emulation), arm64 for the
-; native one. Suffix is the bundle's word for it, which names the file.
-
+; Lunola Mova x64 installer draft, derived from Concat installer sources.
+; Retain upstream authorship; identity intentionally distinct from Concat.
+; iscc /DVersion=0.2.7 /DStage=<absolute-stage> /DOut=<output> assets\windows\concat.iss
+; Stage must pass stage-windows.py --verify and app smoke before compilation.
 #ifndef Version
   #error Version is required
-#endif
-#ifndef Arch
-  #error Arch is required: x64compatible or arm64
-#endif
-#ifndef Suffix
-  #error Suffix is required: x86_64 or aarch64
 #endif
 #ifndef Stage
   #error Stage is required: the staged folder to install
@@ -32,28 +15,25 @@
 [Setup]
 ; One id for the life of the product, so an install over an older one is
 ; an upgrade and not a second copy.
-AppId={{7B1E5C3A-3B9E-4F0B-9C6D-2F1D0C0A0C47}
-AppName=Concat
+AppId={{BB9F47D4-89F0-473E-BDCE-1BB56C201446}
+AppName=Lunola Mova
 AppVersion={#Version}
-AppVerName=Concat {#Version}
-AppPublisher=Concat contributors
-AppPublisherURL=https://github.com/jub0t/Concat
-AppSupportURL=https://github.com/jub0t/Concat/issues
-AppUpdatesURL=https://github.com/jub0t/Concat/releases
-DefaultDirName={autopf}\Concat
-DefaultGroupName=Concat
+AppVerName=Lunola Mova {#Version}
+AppPublisher=Lunola
+DefaultDirName={autopf}\Lunola Mova
+DefaultGroupName=Lunola Mova
 DisableProgramGroupPage=yes
-LicenseFile=..\..\LICENSE
+LicenseFile={#Stage}\LICENSE
 OutputDir={#Out}
-OutputBaseFilename=Concat-{#Version}-windows-{#Suffix}-setup
-SetupIconFile=..\icons\concat.ico
-UninstallDisplayIcon={app}\concat.ico
-UninstallDisplayName=Concat
+OutputBaseFilename=Lunola-Mova-{#Version}-windows-x64
+SetupIconFile={#Stage}\lunola-mova.ico
+UninstallDisplayIcon={app}\lunola-mova.ico
+UninstallDisplayName=Lunola Mova
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesAllowed={#Arch}
-ArchitecturesInstallIn64BitMode={#Arch}
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ; For the user alone unless they ask for the machine: no prompt for an
 ; administrator to install a video editor into one's own account.
 PrivilegesRequired=lowest
@@ -63,7 +43,8 @@ PrivilegesRequiredOverridesAllowed=dialog
 ShowLanguageDialog=auto
 
 [Languages]
-; Every language the app ships. Inno Setup carries the official
+; Inherited installer translations, not proof of fork app-language validation.
+; Inno Setup carries the official
 ; translations. The ones it keeps as unofficial - Chinese, Persian,
 ; Croatian, Bengali, Hindi, Indonesian, Urdu, Vietnamese - and the ones
 ; made official lately - Korean, Arabic and Thai, which an older compiler
@@ -105,11 +86,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#Stage}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\icons\concat.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Concat"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"
-Name: "{autodesktop}\Concat"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"; Tasks: desktopicon
+Name: "{autoprograms}\Lunola Mova"; Filename: "{app}\lunola-mova.exe"; IconFilename: "{app}\lunola-mova.ico"
+Name: "{autodesktop}\Lunola Mova"; Filename: "{app}\lunola-mova.exe"; IconFilename: "{app}\lunola-mova.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\concat.exe"; Description: "{cm:LaunchProgram,Concat}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\lunola-mova.exe"; Description: "{cm:LaunchProgram,Lunola Mova}"; Flags: nowait postinstall skipifsilent

@@ -559,6 +559,7 @@ impl Api {
         };
         let host_spec = export::ExportSpec {
             output: spec.output.clone(),
+            format: export::ExportFormat::Movie,
             crf: spec.crf.unwrap_or(DEFAULT_CRF),
             preset: spec
                 .preset

@@ -1,44 +1,31 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Concat's Windows Installer package, the .msi beside the Inno Setup .exe.
-
-  Built by build-app.yml with WiX from the staged folder the .exe is made
-  of, so the two installers ship the same files. The .exe is the
-  one a person double-clicks; this is the one an administrator deploys -
-  Group Policy, Intune, winget - and it installs for the machine, into
-  Program Files, with a Start menu entry and a clean uninstall. Handed in:
-
-    wix build -arch x64 -d Version=0.2.7 -d Root=C:\...\Concat
-              -d Stage=C:\...\stage\Concat-0.2.7-windows-x86_64
-              -o stage\Concat-0.2.7-windows-x86_64.msi assets\windows\concat.wxs
-
-  Root is the repository: WiX resolves a source path against where it is
-  run from, not against this file.
--->
+<!-- Lunola Mova x64 draft, derived from Concat installer sources.
+     WiX 6: wix build -arch x64 -d Version=0.2.7 -d Stage=<absolute-stage>
+     -o <output>/Lunola-Mova-0.2.7-windows-x64.msi assets/windows/concat.wxs
+     Compile only after verified staging and application smoke. -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <!-- One upgrade code for the life of the product, so a newer .msi
        replaces an older one rather than sitting beside it. -->
-  <Package Name="Concat"
-           Manufacturer="Concat contributors"
+  <Package Name="Lunola Mova"
+           Manufacturer="Lunola"
            Version="$(var.Version)"
-           UpgradeCode="6C4D5D8E-9B2A-4F3B-8E1C-5A7D2B9F0C11"
+           UpgradeCode="4E2D579F-62EB-47F0-8A3E-0779D5D83534"
            Scope="perMachine"
            Language="1033">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Concat is already installed." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Lunola Mova is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <Icon Id="concat.ico" SourceFile="$(var.Root)\assets\icons\concat.ico" />
-    <Property Id="ARPPRODUCTICON" Value="concat.ico" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/jub0t/Concat" />
+    <Icon Id="LunolaMovaIcon.ico" SourceFile="$(var.Stage)\lunola-mova.ico" />
+    <Property Id="ARPPRODUCTICON" Value="LunolaMovaIcon.ico" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Concat" />
+      <Directory Id="INSTALLFOLDER" Name="Lunola Mova" />
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">
-      <Directory Id="ShortcutFolder" Name="Concat" />
+      <Directory Id="ShortcutFolder" Name="Lunola Mova" />
     </StandardDirectory>
 
-    <Feature Id="Main" Title="Concat" Level="1">
+    <Feature Id="Main" Title="Lunola Mova" Level="1">
       <ComponentGroupRef Id="Program" />
       <ComponentRef Id="StartMenu" />
     </Feature>
@@ -48,15 +35,15 @@
       <Files Include="$(var.Stage)\**" />
     </ComponentGroup>
 
-    <Component Id="StartMenu" Directory="ShortcutFolder" Guid="2F0B7C51-6E4D-4A1B-9C3E-8D5F1A2B3C44">
+    <Component Id="StartMenu" Directory="ShortcutFolder" Guid="D04E9537-0956-401C-90EB-8FD30028D9CF">
       <Shortcut Id="StartMenuShortcut"
-                Name="Concat"
+                Name="Lunola Mova"
                 Description="Video editor"
-                Target="[INSTALLFOLDER]concat.exe"
+                Target="[INSTALLFOLDER]lunola-mova.exe"
                 WorkingDirectory="INSTALLFOLDER"
-                Icon="concat.ico" />
+                Icon="LunolaMovaIcon.ico" />
       <RemoveFolder Id="RemoveShortcutFolder" On="uninstall" />
-      <RegistryValue Root="HKCU" Key="Software\Concat" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      <RegistryValue Root="HKLM" Key="Software\Lunola\Mova" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
     </Component>
   </Package>
 </Wix>

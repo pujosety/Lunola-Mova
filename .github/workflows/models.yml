@@ -1,5 +1,8 @@
 name: Mirror models
 
+permissions:
+  contents: read
+
 # Fills Concat's model mirror from upstream and publishes it as a release.
 #
 # Concat fetches its cutout networks, its Kokoro voice bank and its whisper
@@ -29,7 +32,7 @@ on:
         description: Upload to the release tag, rather than only fetching and checking
         type: boolean
         required: false
-        default: true
+        default: false
 
 concurrency:
   group: models
@@ -37,6 +40,8 @@ concurrency:
 
 jobs:
   mirror:
+    # Model mirror rights review is separate; runtime stays on pinned upstream URLs.
+    if: vars.LUNOLA_PUBLICATION_ENABLED == 'true' && vars.LUNOLA_MODEL_PUBLICATION_ENABLED == 'true'
     name: Fill and publish
     runs-on: ubuntu-latest
     # Two gigabytes down and two up, which takes a runner well under an
@@ -105,7 +110,7 @@ jobs:
       # under its own name, and `--clobber` means re-running after a fixed
       # row replaces the file rather than failing on it.
       - name: Publish
-        if: inputs.publish
+        if: inputs.publish && vars.LUNOLA_PUBLICATION_ENABLED == 'true' && vars.LUNOLA_MODEL_PUBLICATION_ENABLED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE: ${{ steps.table.outputs.release }}
@@ -113,8 +118,8 @@ jobs:
           set -euo pipefail
           if ! gh release view "$RELEASE" >/dev/null 2>&1; then
             gh release create "$RELEASE" \
-              --title "Concat models ($RELEASE)" \
-              --notes "The models Concat downloads on demand, mirrored from the upstreams named in models/manifest.toml. Not an app release: see the tags beginning with v for those." \
+              --title "Lunola Mova model mirror ($RELEASE)" \
+              --notes "A separately reviewed mirror of models used by Lunola Mova; runtime downloads remain pinned to upstream. Models, mirrored from the upstreams named in models/manifest.toml. Not an app release: see the tags beginning with v for those." \
               --latest=false
           fi
           gh release upload "$RELEASE" mirror/* --clobber

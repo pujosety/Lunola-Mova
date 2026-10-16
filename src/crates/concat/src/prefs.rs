@@ -6,6 +6,7 @@
 //! models are chosen, which languages. A missing or unreadable file is the
 //! defaults, never an error.
 
+use crate::dock::SavedWorkspace;
 use concat_host::AppDirs;
 use serde::{Deserialize, Serialize};
 
@@ -19,8 +20,8 @@ pub struct Preferences {
     pub dark: Option<bool>,
     /// The accent, by the lower-cased name the theme lists it under —
     /// "lime", "sky", ... — or as "#rrggbb" for a colour picked by hand.
-    /// `None`, or a name no longer on the list, is the first one, which is
-    /// Lime.
+    /// `None`, or a name no longer on the list, selects Violet, Lunola's
+    /// default. Existing named choices and custom hex colours are preserved.
     pub accent: Option<String>,
     /// The playhead's colour as "#rrggbb", when one was picked by hand in
     /// Settings > Appearance. `None` is the palette's own, which is lime.
@@ -72,6 +73,10 @@ pub struct Preferences {
     /// kept from a title by the Text panel's "Use for new titles"; its
     /// words are empty. None starts titles in the bundled face.
     pub title_style: Option<concat_project::model::TextStyle>,
+    /// The user's wide and compact workspace trees. Absent in older settings
+    /// files, which continue to use the built-in layouts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_layout: Option<SavedWorkspace>,
     /// What the log records, by the name concat_host::logs reads: `info`
     /// unless the Settings sheet was asked for more or less. CONCAT_LOG in
     /// the environment overrides it for one run.
@@ -80,18 +85,23 @@ pub struct Preferences {
 
 impl Preferences {
     /// Which of `names` — the theme's accents, in its order — the remembered
-    /// accent is. The first when nothing is remembered, and the first when
-    /// the name is one the list no longer has: it is the default, and a
-    /// choice that has gone away should fall back to the default rather
-    /// than to whatever happens to sit at its old position.
+    /// accent is. Missing or unknown choices select Violet by name, not a
+    /// hard-coded index. If that palette is absent, retain the first-row
+    /// fallback. Never rewrite a saved named or custom choice here.
     pub fn accent_index(&self, names: impl IntoIterator<Item = impl AsRef<str>>) -> usize {
-        let Some(wanted) = self.accent.as_deref().map(str::trim) else {
-            return 0;
-        };
-        names
-            .into_iter()
-            .position(|name| Self::accent_id(name.as_ref()) == wanted.to_lowercase())
-            .unwrap_or(0)
+        let wanted = self.accent.as_deref().map(Self::accent_id);
+        let mut default = 0;
+        let mut chosen = None;
+        for (index, name) in names.into_iter().enumerate() {
+            let id = Self::accent_id(name.as_ref());
+            if id == "violet" {
+                default = index;
+            }
+            if chosen.is_none() && wanted.as_deref() == Some(id.as_str()) {
+                chosen = Some(index);
+            }
+        }
+        chosen.unwrap_or(default)
     }
 
     /// The id an accent is remembered under: its name, lower-cased, so the
@@ -164,10 +174,12 @@ mod tests {
 
     const NAMES: [&str; 3] = ["Lime", "Sky", "Violet"];
 
-    /// Nothing remembered is the first accent, which is the default.
+    /// Nothing remembered selects the named Lunola default.
     #[test]
-    fn no_accent_is_the_first() {
-        assert_eq!(Preferences::default().accent_index(NAMES), 0);
+    fn no_accent_is_violet() {
+        assert_eq!(Preferences::default().accent_index(NAMES), 2);
+        assert_eq!(Preferences::default().accent_index(["Violet", "Lime"]), 0);
+        assert_eq!(Preferences::default().accent_index(["Lime", "Sky"]), 0);
     }
 
     /// A remembered name finds its row whatever its case or spacing, since
@@ -183,6 +195,17 @@ mod tests {
         }
     }
 
+    /// Rebranding changes the default, not a user's explicit Lime choice.
+    #[test]
+    fn remembered_lime_is_preserved() {
+        let prefs = Preferences {
+            accent: Some("lime".to_owned()),
+            ..Preferences::default()
+        };
+        assert_eq!(prefs.accent_index(NAMES), 0);
+        assert_eq!(prefs.accent_index(["Violet", "Lime", "Sky"]), 1);
+    }
+
     /// A name the list no longer has falls back to the default rather than
     /// to a position, and an empty list cannot be indexed into at all.
     #[test]
@@ -191,13 +214,13 @@ mod tests {
             accent: Some("chartreuse".to_owned()),
             ..Preferences::default()
         };
-        assert_eq!(prefs.accent_index(NAMES), 0);
+        assert_eq!(prefs.accent_index(NAMES), 2);
         assert_eq!(prefs.accent_index(Vec::<String>::new()), 0);
         let blank = Preferences {
             accent: Some(String::new()),
             ..Preferences::default()
         };
-        assert_eq!(blank.accent_index(NAMES), 0);
+        assert_eq!(blank.accent_index(NAMES), 2);
     }
 
     /// The id is what gets written and what gets matched, so the two have
@@ -224,7 +247,7 @@ mod tests {
             ..Preferences::default()
         };
         assert_eq!(picked.custom_accent(), Some("#FF00AA"));
-        assert_eq!(picked.accent_index(NAMES), 0);
+        assert_eq!(picked.accent_index(NAMES), 2);
         let named = Preferences {
             accent: Some("sky".to_owned()),
             ..Preferences::default()
@@ -245,7 +268,7 @@ mod tests {
         let back: Preferences = serde_json::from_str(r#"{"dark": false}"#).unwrap();
         assert_eq!(back.dark, Some(false));
         assert_eq!(back.accent, None);
-        assert_eq!(back.accent_index(NAMES), 0);
+        assert_eq!(back.accent_index(NAMES), 2);
     }
 
     /// A picked playhead colour is written as its hex and read back as
@@ -262,5 +285,50 @@ mod tests {
         assert_eq!(back.playhead.as_deref(), Some("#ff453a"));
         let older: Preferences = serde_json::from_str(r#"{"dark": true}"#).unwrap();
         assert_eq!(older.playhead, None);
+    }
+
+    #[test]
+    fn workspace_layout_roundtrips_through_settings_json() {
+        let root =
+            std::env::temp_dir().join(format!("lunola-workspace-prefs-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            data: root.join("data"),
+        };
+        let expected =
+            SavedWorkspace::from_docks(&crate::dock::default_dock(), &crate::dock::compact_dock());
+        let prefs = Preferences {
+            workspace_layout: Some(expected.clone()),
+            ..Preferences::default()
+        };
+        prefs.save(&dirs);
+        let loaded = Preferences::load(&dirs);
+        assert_eq!(loaded.workspace_layout, Some(expected));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn magnetic_preference_is_off_by_default_and_persists_when_enabled() {
+        assert!(!Preferences::default().magnetic);
+        let root =
+            std::env::temp_dir().join(format!("lunola-magnetic-prefs-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            data: root.join("data"),
+        };
+        let prefs = Preferences {
+            magnetic: true,
+            ..Preferences::default()
+        };
+        prefs.save(&dirs);
+        assert!(Preferences::load(&dirs).magnetic);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_settings_without_workspace_layout_remain_readable() {
+        let legacy: Preferences = serde_json::from_str(r#"{"dark": false}"#).unwrap();
+        assert_eq!(legacy.dark, Some(false));
+        assert!(legacy.workspace_layout.is_none());
     }
 }

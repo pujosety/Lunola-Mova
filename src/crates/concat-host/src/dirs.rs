@@ -21,8 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The app identifier, which is also the folder name everywhere.
-pub const IDENTIFIER: &str = "app.concat.editor";
+/// The fork's local profile namespace; not a claim of domain ownership.
+pub const IDENTIFIER: &str = "app.lunola.mova";
 
 /// The app's own directories on this machine.
 #[derive(Clone, Debug)]
@@ -182,6 +182,22 @@ fn home() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fork_profile_never_uses_the_upstream_identifier() {
+        assert_eq!(IDENTIFIER, "app.lunola.mova");
+        let base = Path::new("profiles");
+        let fork = AppDirs::under(&base.join(IDENTIFIER));
+        let upstream = AppDirs::under(&base.join("app.concat.editor"));
+        assert_ne!(fork.config, upstream.config);
+        assert_ne!(fork.data, upstream.data);
+        let mac = apple(base, false);
+        let phone = apple(base, true);
+        for path in [mac.config, mac.data, phone.config, phone.data] {
+            assert!(path.ends_with(IDENTIFIER));
+            assert!(!path.ends_with("app.concat.editor"));
+        }
+    }
 
     #[test]
     fn the_directories_are_named_by_the_identifier() {

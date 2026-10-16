@@ -22,7 +22,7 @@
 #     #312),
 #
 # and passes if none of that has happened by the end of the wait, with the
-# app's own first line ("Concat <version> starting") in the log, so a pass
+# app's own first line ("Lunola Mova <version> starting") in the log, so a pass
 # means its native code ran. With --ready, it also requires a line matching
 # REGEX (an extended regular expression) by the end of the wait, and stops
 # waiting once it appears.
@@ -44,7 +44,7 @@
 # whole logcat from before the launch to the end, the app's lines alone,
 # a screenshot of the screen at the end, the window focus, and the
 # device's properties. CI uploads that folder. The package is
-# app.concat.editor unless --package names another.
+# app.lunola.mova unless --package names another.
 #
 # --no-install starts what is already installed, which leaves a device
 # somebody is using as it was apart from the restart of the app. Runs in
@@ -56,7 +56,7 @@ out=smoke-android
 wait_secs=45
 ready=""
 install=1
-package=app.concat.editor
+package=app.lunola.mova
 
 usage() {
   echo "usage: $0 [--out DIR] [--wait SECS] [--ready REGEX] [--no-install] [--package NAME] APK" >&2
@@ -103,7 +103,8 @@ collect() {
   {
     adb shell dumpsys activity activities 2>/dev/null | grep -i 'ResumedActivity'
     adb shell dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp'
-  } | tr -d '\r' > "$out/focus.txt"
+  } | tr -d '
+' > "$out/focus.txt"
   adb shell getprop > "$out/getprop.txt" 2>/dev/null
   # Tombstones for a native crash, where the device lets them be read.
   adb logcat -d -b crash -v threadtime > "$out/logcat-crash.txt" 2>/dev/null
@@ -139,15 +140,20 @@ say "the device"
 limit 300 adb wait-for-device || fail "no device came up for adb within 300s"
 booted=""
 for _ in $(seq 1 150); do
-  booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+  booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '
+' || true)
   [ "$booted" = 1 ] && break
   sleep 2
 done
 [ "$booted" = 1 ] || fail "the device did not finish booting within 300s"
-sdk=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
-release=$(adb shell getprop ro.build.version.release | tr -d '\r')
-abilist=$(adb shell getprop ro.product.cpu.abilist | tr -d '\r')
-model=$(adb shell getprop ro.product.model | tr -d '\r')
+sdk=$(adb shell getprop ro.build.version.sdk | tr -d '
+')
+release=$(adb shell getprop ro.build.version.release | tr -d '
+')
+abilist=$(adb shell getprop ro.product.cpu.abilist | tr -d '
+')
+model=$(adb shell getprop ro.product.model | tr -d '
+')
 echo "$model, Android $release (API $sdk), ABIs $abilist"
 
 # The ABIs the APK carries native code for, from its lib/ folders. One the
@@ -176,7 +182,8 @@ adb shell pm path "$package" > /dev/null 2>&1 || fail "$package is not installed
 # The activity the launcher would start, asked of the package manager
 # rather than written down: cargo-apk names it, not this script.
 activity=$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$package" 2>/dev/null \
-  | tr -d '\r' | tail -n 1)
+  | tr -d '
+' | tail -n 1)
 case "$activity" in
   "$package"/*) ;;
   *) fail "no launcher activity for $package (resolve-activity said: $activity)" ;;
@@ -192,7 +199,8 @@ adb logcat -G 16M > /dev/null 2>&1 || true
 adb logcat -c || true
 adb logcat -v threadtime > "$logcat_file" 2>&1 &
 logcat_pid=$!
-started=$(limit 180 adb shell am start -W -n "$activity" 2>&1 | tr -d '\r') \
+started=$(limit 180 adb shell am start -W -n "$activity" 2>&1 | tr -d '
+') \
   || fail "am start did not return within 180s"
 printf '%s\n' "$started"
 grep -q '^Status: ok' <<< "$started" || fail "am start did not report the launch as ok"
@@ -217,7 +225,8 @@ fatal+='| concat +: ([A-Za-z0-9_:]+: )?(preview: |could not start|close: event l
 pids=""
 running=""
 app_pids() {
-  running=$(adb shell pidof "$package" 2>/dev/null | tr -d '\r' || true)
+  running=$(adb shell pidof "$package" 2>/dev/null | tr -d '
+' || true)
   pids=$(
     {
       sed -n "s/.*Start proc \([0-9][0-9]*\):$package\/.*/\1/p" "$logcat_file"
@@ -314,8 +323,8 @@ grep -i 'ResumedActivity' "$out/focus.txt" | grep -q "$package/" \
   || fail "the app's activity is not the one in front after ${wait_secs}s"
 # The app's own first line, from android_main: proof its native code ran,
 # and not only that a process by its name exists.
-grep -E -q ' concat +: ([A-Za-z0-9_:]+: )?Concat .* starting' "$logcat_file" \
-  || fail "the app's first line (\"Concat <version> starting\") never reached logcat"
+grep -E -q ' concat +: ([A-Za-z0-9_:]+: )?Lunola Mova .* starting' "$logcat_file" \
+  || fail "the app's first line (\"Lunola Mova <version> starting\") never reached logcat"
 if [ -n "$ready" ] && [ -z "$seen_ready" ]; then
   fail "no line matching '$ready' within ${wait_secs}s"
 fi

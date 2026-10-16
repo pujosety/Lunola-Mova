@@ -67,7 +67,24 @@ impl CutoutJob {
             .store
             .resolved(source_time.as_f64(), &self.cutout, self.aspect)?;
         let mut out = frame.clone();
-        concat_vision::cut(&mut out, &mask, &self.mapping);
+        match self.cutout.background_mode {
+            1 => concat_vision::cut_blur(
+                &mut out,
+                &mask,
+                &self.mapping,
+                self.cutout.background_blur as f32,
+            ),
+            2 => {
+                let rgb = self.cutout.background_color;
+                concat_vision::cut_replace(
+                    &mut out,
+                    &mask,
+                    &self.mapping,
+                    [((rgb >> 16) & 0xff) as u8, ((rgb >> 8) & 0xff) as u8, (rgb & 0xff) as u8],
+                );
+            }
+            _ => concat_vision::cut(&mut out, &mask, &self.mapping),
+        }
         Some(out)
     }
 
@@ -80,6 +97,110 @@ impl CutoutJob {
         let mut out = frame.clone();
         concat_vision::highlight(&mut out, &mask, &self.mapping, HIGHLIGHT);
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod background_mode_tests {
+    use super::*;
+    use concat_core::frame::Frame;
+    use concat_vision::{Mask, MaskStore};
+
+    fn fixture(mode: u8) -> (CutoutJob, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "mova-resolve-bg-{}-{mode}",
+            std::process::id()
+        ));
+        let mut store = MaskStore::open(&dir);
+        store.clear();
+        let mask = Mask::from_bytes(2, 1, vec![255, 0]).unwrap();
+        store.put(0, &mask).unwrap();
+        let mut cutout = Cutout::auto();
+        cutout.feather = 0.0;
+        cutout.background_mode = mode;
+        cutout.background_blur = 0.5;
+        cutout.background_color = 0x00ff00;
+        (
+            CutoutJob {
+                store,
+                cutout,
+                mapping: Mapping::IDENTITY,
+                aspect: 2.0,
+            },
+            dir,
+        )
+    }
+
+    fn frame() -> Frame {
+        let mut frame = Frame::black(4, 2);
+        frame.fill([200, 0, 0, 255]);
+        for y in 0..2 {
+            frame.set_pixel(2, y, [0, 0, 200, 255]);
+            frame.set_pixel(3, y, [0, 0, 200, 255]);
+        }
+        frame
+    }
+
+    #[test]
+    fn transparent_mode_cuts_background_alpha_and_keeps_subject() {
+        let (job, dir) = fixture(0);
+        let out = job.cut(&frame(), concat_core::Rational::ZERO).unwrap();
+        assert_eq!(out.pixel(0, 0).unwrap(), [200, 0, 0, 255]);
+        assert_eq!(out.pixel(3, 0).unwrap(), [0, 0, 200, 0]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transparent_cutout_reveals_a_media_layer_beneath_the_subject() {
+        use concat_render::{Compositor, FramePlan, PlannedLayer, WgpuCompositor, detached_clip};
+        use std::sync::Arc;
+
+        let (job, dir) = fixture(0);
+        let foreground = job.cut(&frame(), concat_core::Rational::ZERO).unwrap();
+        let mut background = Frame::black(4, 2);
+        background.fill([0, 200, 0, 255]);
+        let plan = FramePlan {
+            layers: vec![
+                PlannedLayer::picture(detached_clip(), Arc::new(background)),
+                PlannedLayer::picture(detached_clip(), Arc::new(foreground)),
+            ],
+            ..FramePlan::empty(4, 2)
+        };
+        let Some(mut compositor) = WgpuCompositor::software() else {
+            let _ = std::fs::remove_dir_all(dir);
+            panic!("software compositor unavailable; replacement path not verified");
+        };
+        let rendered = compositor.render(&plan);
+        let subject = rendered.pixel(0, 0).unwrap();
+        let revealed = rendered.pixel(3, 0).unwrap();
+        for (actual, expected) in subject.iter().zip([200u8, 0, 0, 255]) {
+            assert!(actual.abs_diff(expected) <= 3, "subject changed: {subject:?}");
+        }
+        for (actual, expected) in revealed.iter().zip([0u8, 200, 0, 255]) {
+            assert!(actual.abs_diff(expected) <= 3, "lower layer not revealed: {revealed:?}");
+        }
+        assert!(!compositor.is_dead());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn solid_replacement_reaches_background_but_not_subject() {
+        let (job, dir) = fixture(2);
+        let out = job.cut(&frame(), concat_core::Rational::ZERO).unwrap();
+        assert_eq!(out.pixel(0, 0).unwrap(), [200, 0, 0, 255]);
+        assert_eq!(out.pixel(3, 0).unwrap(), [0, 255, 0, 255]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn background_blur_dispatch_softens_the_masked_out_side() {
+        let (job, dir) = fixture(1);
+        let out = job.cut(&frame(), concat_core::Rational::ZERO).unwrap();
+        let edge = out.pixel(3, 0).unwrap();
+        assert!(edge[0] > 0 || edge[2] < 200, "background edge was not blurred: {edge:?}");
+        assert_eq!(edge[3], 255);
+        assert_eq!(out.pixel(0, 0).unwrap(), [200, 0, 0, 255]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

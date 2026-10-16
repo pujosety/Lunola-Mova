@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
-# Generate a folder of square icon PNGs from a single 512x512 source.
+# Generate square derivatives from the approved 1254x1254 Lunola icon.
+# Existing files and approved originals are never overwritten.
 #
 # Usage:
 #   scripts/generate-icons.sh [source.png] [output-dir]
 #
 # Defaults:
-#   source     assets/concat_logo_512.png
-#              (a 512px render of assets/new_concat_logo_512_rounded_light_theme.svg)
-#   output-dir assets/icons
+#   source     assets/lunola/originals/app-icon.png
+#              (approved original; never overwrite it)
+#   output-dir assets/lunola/generated-icons
 #
 # Uses sips on macOS, ImageMagick (magick/convert) elsewhere.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="${1:-$REPO_ROOT/assets/concat_logo_512.png}"
-OUT="${2:-$REPO_ROOT/assets/icons}"
-SIZES=(512 256 128 64 32 16)
+SRC="${1:-$REPO_ROOT/assets/lunola/originals/app-icon.png}"
+OUT="${2:-$REPO_ROOT/assets/lunola/generated-icons}"
+SIZES=(1024 512 256 128 64 32 16)
 
 if [[ ! -f "$SRC" ]]; then
   echo "error: source image not found: $SRC" >&2
   exit 1
 fi
 
+# Derivatives must never overwrite approved originals or the input image.
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd -P)"
+case "$OUT/" in
+  "$REPO_ROOT/assets/lunola/originals/"*)
+    echo "error: approved originals are immutable; use a derivative directory" >&2
+    exit 1 ;;
+esac
 
 resize() { # resize <size> <dest>
   if command -v sips >/dev/null 2>&1; then
@@ -37,10 +45,12 @@ resize() { # resize <size> <dest>
   fi
 }
 
-base="$(basename "$SRC" .png)"
-base="${base%_512}"
 for size in "${SIZES[@]}"; do
-  dest="$OUT/${base}_${size}.png"
+  dest="$OUT/icon-${size}.png"
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    echo "error: refusing to overwrite existing derivative: $dest" >&2
+    exit 1
+  fi
   resize "$size" "$dest"
   echo "wrote $dest"
 done

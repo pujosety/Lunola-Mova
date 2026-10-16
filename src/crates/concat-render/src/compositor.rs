@@ -26,6 +26,13 @@ pub trait Compositor {
     /// encoder, and neither has anything to show through.
     fn render(&mut self, plan: &FramePlan) -> Frame;
 
+    /// Draws the same plan onto transparent black and returns straight-alpha
+    /// RGBA. Compositors that cannot preserve alpha return `None` rather than
+    /// silently making the output opaque.
+    fn render_alpha(&mut self, _plan: &FramePlan) -> Option<Frame> {
+        None
+    }
+
     /// Combines two finished frames with a transition: the outgoing picture
     /// `from` and the incoming one `to`, at the pass's `progress`. The shader
     /// owns the blend. `None` from a compositor that cannot run it: the

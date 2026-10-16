@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use concat_export::{ExportClip, ExportRequest, Reporter, render_on};
+pub use concat_export::ExportFormat;
 pub use concat_media::{ColorRange, RateMode, VideoCodec};
 pub use concat_render::WgpuCompositor;
 
@@ -22,8 +23,10 @@ use crate::session::Session;
 /// and any rasterised titles rejoining as image clips.
 #[derive(Clone, Debug, Default)]
 pub struct ExportSpec {
-    /// The file to write.
+    /// The destination file for movies, or directory for a PNG sequence.
     pub output: String,
+    /// The output shape; Movie preserves the existing default.
+    pub format: ExportFormat,
     /// Constant rate factor; lower is better quality and a bigger file.
     pub crf: u8,
     /// The x264 speed/size preset name, e.g. "medium".
@@ -65,6 +68,7 @@ pub fn request(session: &Session, spec: &ExportSpec, titles: Vec<ExportClip>) ->
     clips.extend(titles);
     ExportRequest {
         output: spec.output.clone(),
+        format: spec.format,
         width: settings.width,
         height: settings.height,
         rate_num: settings.rate_num,

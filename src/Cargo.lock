@@ -1232,7 +1232,9 @@ dependencies = [
  "concat-render",
  "concat-vision",
  "log",
+ "png 0.17.16",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

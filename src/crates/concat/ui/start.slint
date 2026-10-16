@@ -3,6 +3,7 @@
 
 import { I18n } from "i18n.slint";
 import { Theme } from "theme/theme.slint";
+import { StartHero } from "brand.slint";
 import { CopyChip, Modal } from "primitives/modal.slint";
 import { FocusRing } from "primitives/focus-ring.slint";
 import { Glyph, Icon } from "icons.slint";
@@ -44,12 +45,9 @@ import { NumberField } from "primitives/number-field.slint";
 //   their values with its chip rows across the width, and the forget cross
 //   stays on every card, since there is no hover to reveal it with.
 //
-// The look is the website's, which is the same product wearing the same
-// clothes: near-black steps for the surfaces, a hairline of light on the
-// top edge of anything raised, one lime accent used on almost nothing, and
-// a filled button whose fill is the ink rather than the accent. What the
-// site does with an accent — one highlighted word — this does with the
-// plus on the new-project card and the one link in the sheet.
+// Lunola Mova adds its supplied splash artwork and wordmark above the
+// project browser. The original browser, responsive rail, editing form and
+// callbacks remain intact. Purple marks actions, not media kinds or meters.
 //
 // There is no template store in this tree, which is also why the library's
 // "save as template" is an unwired seam, and why the rail has no fourth
@@ -526,11 +524,8 @@ component FormRow inherits Rectangle {
 
 // The pill the sheet is built around, and its quieter sibling.
 //
-// Primary is the ink itself — near-white on the dark palette, near-black on
-// the light one — and not the accent. It is the site's rule: one accent,
-// spent on a mark and a word, never on a fill this size. Hover goes one
-// step further from the ground rather than towards it, which is what
-// `fg-hot` is for.
+// Primary uses the selected accent and its paired ink in both themes.
+// Existing preferences still select the same named palette or custom colour.
 component PillButton inherits Rectangle {
     in property <string> label;
     in property <Glyph> glyph;
@@ -543,7 +538,7 @@ component PillButton inherits Rectangle {
     property <bool> lit: touch.has-hover && root.enabled;
     property <length> mark: root.glyph == Glyph.none ? 0px : 15px;
     property <length> gap: root.glyph == Glyph.none ? 0px : 8px;
-    property <brush> ink: root.primary ? Theme.launch-page
+    property <brush> ink: root.primary ? Theme.on-accent
         : root.lit ? Theme.fg
         : Theme.fg-muted;
 
@@ -552,7 +547,7 @@ component PillButton inherits Rectangle {
     min-width: root.block ? 0px
         : caption.preferred-width + root.mark + root.gap + 44px;
     border-radius: self.height / 2;
-    background: root.primary ? (root.lit ? Theme.fg-hot : Theme.fg)
+    background: root.primary ? (root.lit ? Theme.accent-hover : Theme.accent)
         : root.lit ? Theme.launch-field
         : Theme.launch-raised;
     border-width: root.primary ? 0px : 1px;
@@ -1051,8 +1046,8 @@ export component StartScreen inherits Rectangle {
     /// Room above the heading. The site opens on a screen of air; a window
     /// has less of it to give. A phone has the least, and still wants the
     /// heading well clear of the top edge and whatever bar sits on it.
-    property <length> pad-top: root.narrow ? 40px
-        : Math.max(32px, Math.min(88px, root.height / 9));
+    property <length> pad-top: root.narrow ? 20px
+        : Math.max(20px, Math.min(40px, root.height / 18));
     /// The content column: wide enough that the cards read as a shelf.
     property <length> content-w: 1120px;
     /// The rail's width, and the page's left edge. Zero is a phone, which
@@ -1102,6 +1097,9 @@ export component StartScreen inherits Rectangle {
 
                 stack := VerticalLayout {
                     alignment: start;
+
+                    StartHero { }
+                    Rectangle { height: root.narrow ? 20px : 26px; }
 
                     // ── the heading ──────────────────────────────────────
                     HorizontalLayout {

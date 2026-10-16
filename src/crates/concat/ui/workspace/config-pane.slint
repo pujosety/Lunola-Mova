@@ -203,6 +203,9 @@ export component ConfigPane inherits Rectangle {
     callback cutout-painting(on: bool);
     callback cutout-subject(index: int);
     callback cutout-clear();
+    callback cutout-background-mode(mode: int);
+
+    callback cutout-background-color(value: color);
     /// The Enhance switch: start it, or show the copy or the original.
     callback clip-enhance-set(on: bool);
     callback transition-remove();
@@ -270,7 +273,7 @@ export component ConfigPane inherits Rectangle {
 
     /// The sections of the current tab, as the dropdown lists them.
     property <[string]> sections: root.heading == "Video"
-            ? (root.is-shape ? ["Basic"] : ["Basic", "Enhance", "Adjust"])
+            ? (root.is-shape ? ["Basic"] : ["Basic", "Enhance", "Adjust", "Cutout"])
         : root.heading == "Audio"
             ? ["Sound"]
         : root.heading == "Effects" ? ["Effects"]
@@ -279,7 +282,7 @@ export component ConfigPane inherits Rectangle {
     /// The sections as the dropdown shows them; see `tabs-shown`.
     property <[string]> sections-shown: root.heading == "Video"
             ? (root.is-shape ? [I18n.t("configPane.basic")]
-                : [I18n.t("configPane.basic"), I18n.t("common.enhance"), I18n.t("common.adjust")])
+                : [I18n.t("configPane.basic"), I18n.t("common.enhance"), I18n.t("common.adjust"), I18n.t("clipInspector.lunolaCutout")])
         : root.heading == "Audio"
             ? [I18n.t("configPane.sound")]
         : root.heading == "Effects" ? [I18n.t("common.effects")]
@@ -609,9 +612,11 @@ export component ConfigPane inherits Rectangle {
             PaneScroll {
                 // Basic, with the clip's speed under it: one knob is not a
                 // page of its own.
-                if root.showing == "Basic": VerticalLayout {
-                    VideoPanel {
-                        selected: root.selected;
+                if root.showing == "Basic" || root.showing == "Cutout": VerticalLayout {
+                                    VideoPanel {
+                                        cutout-only: root.showing == "Cutout";
+                                        show-cutout: root.showing == "Cutout";
+                                        selected: root.selected;
                         applied: root.applied-visual;
                         params: root.visual-params;
                         colours: root.visual-colours;
@@ -634,9 +639,12 @@ export component ConfigPane inherits Rectangle {
                         cutout-painting(on) => { root.cutout-painting(on); }
                         cutout-subject(index) => { root.cutout-subject(index); }
                         cutout-clear => { root.cutout-clear(); }
+                        cutout-background-mode(mode) => { root.cutout-background-mode(mode); }
+
+                        cutout-background-color(value) => { root.cutout-background-color(value); }
                     }
 
-                    if !root.is-image && !root.is-shape: SpeedPanel {
+                    if root.showing == "Basic" && !root.is-image && !root.is-shape: SpeedPanel {
                         first: false;
                         selected: root.selected;
                         set(field, value) => { root.clip-set(field, value); }

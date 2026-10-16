@@ -72,7 +72,15 @@ case "$target" in
     host_tag=$(ls "$ndk/toolchains/llvm/prebuilt" | head -1)
     bin=$ndk/toolchains/llvm/prebuilt/$host_tag/bin
     echo "Building FFmpeg $version for $target with NDK at $ndk (API $android_api)"
-    (cd "$build" && "$src/configure" "${common[@]}" \
+    # On Windows hosts the Android clang wrapper is not also a native host
+    # compiler for FFmpeg's build-time probes. `FFMPEG_HOST_CC` opts into a
+    # separate native compiler (for example, MinGW gcc) without changing the
+    # Linux CI path, where configure's default host compiler remains correct.
+    host_cc=()
+    if [ -n "${FFMPEG_HOST_CC:-}" ]; then
+      host_cc=(--host-cc="$FFMPEG_HOST_CC")
+    fi
+    (cd "$build" && "$src/configure" "${common[@]}" "${host_cc[@]}" \
       --target-os=android --arch=aarch64 --cpu=armv8-a \
       --sysroot="$ndk/toolchains/llvm/prebuilt/$host_tag/sysroot" \
       --cc="$bin/aarch64-linux-android$android_api-clang" \

@@ -138,6 +138,28 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(s.rgb * s.a, s.a);
 }
 
+// Alpha proof path only: interpolate premultiplied texels, then recover
+// straight colour for shading. Hidden RGB must not contaminate an edge.
+fn premul_at(pixel: vec2<i32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(layer_texture));
+    let c = textureLoad(layer_texture, clamp(pixel, vec2<i32>(0), size - vec2<i32>(1)), 0);
+    return vec4<f32>(c.rgb * c.a, c.a);
+}
+@fragment
+fn fs_alpha_main(in: VsOut) -> @location(0) vec4<f32> {
+    let pos = in.uv * vec2<f32>(textureDimensions(layer_texture)) - vec2<f32>(0.5);
+    let base = vec2<i32>(floor(pos));
+    let f = fract(pos);
+    let c = mix(mix(premul_at(base), premul_at(base + vec2<i32>(1, 0)), f.x),
+                mix(premul_at(base + vec2<i32>(0, 1)), premul_at(base + vec2<i32>(1, 1)), f.x), f.y);
+    var rgb = vec3<f32>(0.0);
+    if (c.a > 0.0) { rgb = c.rgb / c.a; }
+    let mask = textureSample(mask_texture, mask_sampler, in.pic);
+    let kept = select(0.0, 1.0, in.pic.x < in.edges.x && in.pic.x >= in.edges.y);
+    let alpha = c.a * in.opacity * mask.a * kept;
+    return vec4<f32>((rgb * in.scale + in.offset) * alpha, alpha);
+}
+
 fn ground_at(position: vec4<f32>) -> vec3<f32> {
     let size = vec2<f32>(textureDimensions(ground_texture));
     return textureSample(ground_texture, ground_sampler, position.xy / size).rgb;
@@ -222,6 +244,15 @@ fn vs_full(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 fn fs_upload(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     let colour = textureLoad(picture, vec2<i32>(at.xy), 0);
     return vec4<f32>(pow(max(colour.rgb, vec3<f32>(0.0)), vec3<f32>(2.4)), colour.a);
+}
+
+@fragment
+fn fs_resolve_straight(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    // Undo premultiplication in LINEAR light, before the transfer curve.
+    let colour = textureLoad(picture, vec2<i32>(at.xy), 0);
+    if (colour.a <= 0.0) { return vec4<f32>(0.0); }
+    let straight = clamp(colour.rgb / colour.a, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(pow(straight, vec3<f32>(1.0 / 2.4)), clamp(colour.a, 0.0, 1.0));
 }
 
 @fragment
@@ -585,6 +616,7 @@ pub struct WgpuCompositor {
     /// is for an SDR timeline, and rolled off for an HDR one on an SDR
     /// screen.
     resolve_pipeline: wgpu::RenderPipeline,
+    straight_pipeline: wgpu::RenderPipeline,
     tone_mapped_pipeline: wgpu::RenderPipeline,
     /// What the plan being drawn is output in (`FramePlan::output`): taken
     /// up by `prepare`, and read by the uploads and the resolve after it.
@@ -832,14 +864,25 @@ impl WgpuCompositor {
         self.device.adapter_info().device_type == wgpu::DeviceType::Cpu
     }
 
-    /// A second compositor on this one's device, with pipelines, pools and
-    /// caches of its own: work on another thread - the effect cards -
-    /// shares the GPU's time with this one and nothing else, so it never
-    /// waits on this one's lock or evicts what this one keeps.
+    /// A second compositor on this device, for work on the same thread.
+    /// For a worker thread use [`WgpuCompositor::off_thread_sibling`].
     pub fn sibling(&self) -> Self {
         let mut sibling = Self::drawing_in(self.device.clone(), self.queue.clone(), self.work);
         sibling.uncaught = std::sync::Arc::clone(&self.uncaught);
         sibling
+    }
+
+    /// A compositor with its own pools/caches for work off the monitor's
+    /// thread. Sharing a device queue across threads is supported only on
+    /// backends we have selected for that use; otherwise the caller creates
+    /// its compositor on the worker thread instead.
+    pub fn off_thread_sibling(&self) -> Option<Self> {
+        Self::off_thread_queue_safe(self.device.adapter_info().backend).then(|| self.sibling())
+    }
+
+    /// Whether wgpu's shared queue is used from a worker thread on this backend.
+    fn off_thread_queue_safe(backend: wgpu::Backend) -> bool {
+        matches!(backend, wgpu::Backend::Dx12 | wgpu::Backend::Metal)
     }
 
     /// The widest or tallest frame this compositor can draw: the document's
@@ -994,7 +1037,9 @@ impl WgpuCompositor {
         };
         let pipelines: Vec<wgpu::RenderPipeline> = Blend::ALL
             .into_iter()
-            .map(|mode| {
+            .chain(std::iter::once(Blend::Normal))
+            .enumerate()
+            .map(|(index, mode)| {
                 use wgpu::{BlendFactor, BlendOperation};
                 let color = match mode {
                     Blend::Normal => wgpu::BlendComponent {
@@ -1039,7 +1084,7 @@ impl WgpuCompositor {
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: Some("fs_main"),
+                        entry_point: Some(if index == Blend::ALL.len() { "fs_alpha_main" } else { "fs_main" }),
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: work,
@@ -1138,6 +1183,7 @@ impl WgpuCompositor {
         };
         let upload_pipeline = copy_into(work, "fs_upload");
         let resolve_pipeline = copy_into(wgpu::TextureFormat::Rgba8Unorm, "fs_resolve");
+        let straight_pipeline = copy_into(wgpu::TextureFormat::Rgba8Unorm, "fs_resolve_straight");
         let tone_mapped_pipeline =
             copy_into(wgpu::TextureFormat::Rgba8Unorm, "fs_resolve_tone_mapped");
         let hdr_pipelines = ["fs_resolve_hlg", "fs_resolve_pq"]
@@ -1242,6 +1288,7 @@ impl WgpuCompositor {
             ground_pipelines,
             upload_pipeline,
             resolve_pipeline,
+            straight_pipeline,
             tone_mapped_pipeline,
             output: concat_core::frame::Signal::Sdr,
             hdr_pipelines,
@@ -1290,6 +1337,12 @@ impl WgpuCompositor {
             work,
             uncaught: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
+    }
+
+    /// Additive SDR alpha proof API. Returns straight RGBA, not movie output.
+    pub fn render_transparent(&mut self, plan: &FramePlan) -> Result<Frame, String> {
+        let frame = self.render_plan(plan, true);
+        if self.dead { Err("alpha compositor device failed".to_owned()) } else { Ok(frame) }
     }
 
     /// Whether the device has been lost. A dead compositor answers
@@ -1911,6 +1964,10 @@ impl WgpuCompositor {
         draws: &[Draw],
         clear: wgpu::Color,
     ) -> wgpu::CommandEncoder {
+        self.encode_alpha(view, target, draws, clear, false)
+    }
+
+    fn encode_alpha(&self, view: &wgpu::TextureView, target: &wgpu::Texture, draws: &[Draw], clear: wgpu::Color, preserve_alpha: bool) -> wgpu::CommandEncoder {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1924,7 +1981,7 @@ impl WgpuCompositor {
                 pending.push((index, draw));
                 continue;
             };
-            self.draw_segment(&mut encoder, view, size, load, &pending);
+            self.draw_segment(&mut encoder, view, size, load, &pending, preserve_alpha);
             pending.clear();
             load = wgpu::LoadOp::Load;
             encoder.copy_texture_to_texture(
@@ -1936,10 +1993,10 @@ impl WgpuCompositor {
                     depth_or_array_layers: 1,
                 },
             );
-            self.draw_segment(&mut encoder, view, size, load, &[(index, draw)]);
+            self.draw_segment(&mut encoder, view, size, load, &[(index, draw)], preserve_alpha);
         }
         if !pending.is_empty() || matches!(load, wgpu::LoadOp::Clear(_)) {
-            self.draw_segment(&mut encoder, view, size, load, &pending);
+            self.draw_segment(&mut encoder, view, size, load, &pending, preserve_alpha);
         }
         encoder
     }
@@ -1953,6 +2010,7 @@ impl WgpuCompositor {
         size: (u32, u32),
         load: wgpu::LoadOp<wgpu::Color>,
         draws: &[(usize, &Draw)],
+        preserve_alpha: bool,
     ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("concat composite"),
@@ -1983,7 +2041,7 @@ impl WgpuCompositor {
                         .iter()
                         .position(|mode| *mode == draw.blend)
                         .unwrap_or(0);
-                    pass.set_pipeline(&self.pipelines[which]);
+                    pass.set_pipeline(&self.pipelines[if preserve_alpha { Blend::ALL.len() } else { which }]);
                 }
             }
             pass.set_bind_group(0, &self.pool[&draw.size][draw.texture].bind_group, &[]);
@@ -3320,6 +3378,10 @@ impl WgpuCompositor {
     /// map's own result is what decides, not the poll's: a poll can return
     /// without the map having been served.
     fn read_back(&mut self) -> Option<Frame> {
+        self.read_back_alpha(false)
+    }
+
+    fn read_back_alpha(&mut self, preserve_alpha: bool) -> Option<Frame> {
         let deep = self.delivering_hdr();
         let target = if deep {
             self.deep_target.as_ref()?
@@ -3380,8 +3442,10 @@ impl WgpuCompositor {
             }
             // The output goes to a screen or an encoder; neither has anything
             // to show through, and blending may have left alpha short of one.
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel[3] = 255;
+            if !preserve_alpha {
+                for pixel in pixels.chunks_exact_mut(4) {
+                    pixel[3] = 255;
+                }
             }
         }
         target.staging.unmap();
@@ -3389,8 +3453,8 @@ impl WgpuCompositor {
     }
 }
 
-impl Compositor for WgpuCompositor {
-    fn render(&mut self, plan: &FramePlan) -> Frame {
+impl WgpuCompositor {
+    fn render_plan(&mut self, plan: &FramePlan, preserve_alpha: bool) -> Frame {
         // A dead device never comes back for this instance. What it hands
         // back is black, never a mid-export panic, and `lost` says so: the
         // export stops with an error rather than write a file of black.
@@ -3411,7 +3475,7 @@ impl Compositor for WgpuCompositor {
         let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let (draws, vertices) = self.prepare(plan);
         self.write_vertices(&vertices);
-        let frame = self.render_and_read(plan.width, plan.height, &draws);
+        let frame = self.render_and_read_alpha(plan.width, plan.height, &draws, preserve_alpha);
         let refused = pollster::block_on(validation.pop());
         let exhausted = pollster::block_on(memory.pop());
         let errors = [exhausted, refused].into_iter().flatten();
@@ -3437,6 +3501,17 @@ impl Compositor for WgpuCompositor {
                 Frame::black(plan.width, plan.height)
             }
         }
+    }
+
+}
+
+impl Compositor for WgpuCompositor {
+    fn render(&mut self, plan: &FramePlan) -> Frame {
+        self.render_plan(plan, false)
+    }
+
+    fn render_alpha(&mut self, plan: &FramePlan) -> Option<Frame> {
+        self.render_transparent(plan).ok()
     }
 
     fn lost(&self) -> bool {
@@ -3521,15 +3596,22 @@ impl Compositor for WgpuCompositor {
 impl WgpuCompositor {
     /// Draws into the readback target and copies it out: one submit, one
     /// wait. `None` when the device did not deliver the pixels.
-    fn render_and_read(&mut self, width: u32, height: u32, draws: &[Draw]) -> Option<Frame> {
+
+
+    fn render_and_read_alpha(&mut self, width: u32, height: u32, draws: &[Draw], preserve_alpha: bool) -> Option<Frame> {
         let (canvas, canvas_texture, canvas_view) = self.canvas(width, height);
         self.target(width, height);
         let target = self.current_target();
         let view = target
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.encode(&canvas_view, &canvas_texture, draws, wgpu::Color::BLACK);
-        self.resolve(&mut encoder, (width, height), canvas, &view);
+        let clear = if preserve_alpha { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
+        let mut encoder = self.encode_alpha(&canvas_view, &canvas_texture, draws, clear, preserve_alpha);
+        if preserve_alpha {
+            Self::copy(&mut encoder, &self.straight_pipeline, &self.pool[&(width, height)][canvas].bind_group, &view);
+        } else {
+            self.resolve(&mut encoder, (width, height), canvas, &view);
+        }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &target.texture,
@@ -3553,7 +3635,7 @@ impl WgpuCompositor {
         );
         self.queue.submit([encoder.finish()]);
         self.retire();
-        self.read_back()
+        self.read_back_alpha(preserve_alpha)
     }
 }
 

@@ -1047,9 +1047,9 @@ export component Lanes inherits Rectangle {
     in property <float> scroll-left;
     /// Hand tool: wheel and drag pan time instead of scrolling the stack.
     in property <bool> pan-mode: false;
-    /// The preview axis: a hairline follows the pointer across the lanes
-    /// and the monitor shows the frame under it. Off, the lanes say nothing
-    /// about where the pointer is.
+    /// Preview-axis scrubbing moves the primary edit cursor while paused,
+    /// so monitor and Q/W share the same timeline position. Off, moving
+    /// the pointer does not seek.
     in property <bool> preview-axis: false;
     /// The zoom: seconds covered by one pixel.
     in property <float> seconds-per-pixel: 0.05;
@@ -1758,10 +1758,9 @@ export component Lanes inherits Rectangle {
 
         // ── the preview axis ─────────────────────────────────────────────
         //
-        // A hairline where the pointer is, over the lanes and the ruler, so
-        // the frame the monitor is showing has a place on the timeline. Dim,
-        // and under the playhead: it is where you are looking, not where the
-        // cut is.
+        // Hover and the primary edit cursor now share one position. The
+        // release timer still bridges clip/floor hover transitions and the
+        // razor still uses hover-x for its own edge guide.
         hover-off-timer := Timer {
             interval: 80ms;
             running: false;
@@ -1771,14 +1770,8 @@ export component Lanes inherits Rectangle {
                 root.hover-ended();
             }
         }
-        if root.preview-axis && root.hover-on: Rectangle {
-            x: root.hover-x;
-            y: 0;
-            width: 1px;
-            height: root.height;
-            background: Theme.fg-dim;
-            visible: self.x >= 0px && self.x <= root.width;
-        }
+        // Hover preview now moves the primary edit cursor. There is no
+        // second guide left at an old mouse position after a Q/W cut.
 
         // ── the razor's edge ─────────────────────────────────────────────
         //

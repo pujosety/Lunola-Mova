@@ -19,10 +19,13 @@ use crate::model::{
 };
 
 mod audio;
+mod av;
 mod clips;
 pub use clips::why_not_merge;
 mod media;
 mod properties;
+mod removal;
+pub use removal::RemovalMode;
 mod timelines;
 mod tracks;
 
@@ -284,6 +287,31 @@ pub enum Command {
         #[serde(default)]
         ripple: bool,
     },
+    /// Lunola placement: create a video and its sound on distinct lanes in
+    /// one undoable edit. Existing AddClip semantics remain unchanged.
+    AddClipWithAudio {
+        /// The media to place; silent/video-less media are not detached.
+        media_id: String,
+        /// Explicit lane, or the topmost unlocked non-audio lane.
+        #[serde(default)]
+        track_id: Option<String>,
+        /// Position in seconds.
+        start: f64,
+        /// Existing magnetic placement behavior.
+        #[serde(default)]
+        ripple: bool,
+        /// UI-only lane locks, supplied explicitly by the caller.
+        #[serde(default)]
+        locked_tracks: Vec<String>,
+    },
+    /// Toggle Lunola AV linkage for the group's split descendants.
+    /// Legacy detached audio without this marker remains independent.
+    SetClipAvLinked {
+        /// Any member of the group.
+        clip_id: String,
+        /// Whether timeline timing edits operate on aligned group members.
+        linked: bool,
+    },
     /// [`Command::AddClip`] without naming a lane: lands on the lowest
     /// track with nothing in the clip's span, falling back to the bottom
     /// track (overlap and all) rather than refusing.
@@ -444,6 +472,15 @@ pub enum Command {
         entry: usize,
         /// The parameter's manifest key.
         key: String,
+    },
+    /// Atomically selects background removal without replacing source media.
+    /// Off/Chroma retain masks in explicitly named clip round-trip metadata;
+    /// picture keyers are bypassed in place, never removed or reordered.
+    SetClipRemovalMode {
+        /// Target on the active timeline; missing/non-visual media is a no-op.
+        clip_id: String,
+        /// Off, Auto, Custom or Chroma (lowercase on the wire).
+        mode: RemovalMode,
     },
     /// Sets or clears a picture's cutout: the mask that takes its
     /// background away. Tidied on the way in; see [`Cutout::tidy`].
@@ -779,6 +816,9 @@ pub enum CommandError {
     /// [`Command::RemoveTimeline`] would have deleted the last timeline.
     #[error("A project needs at least one timeline.")]
     LastTimeline,
+    /// Retained cutout data is unsupported or conflicts with an active mask.
+    #[error("Retained background-removal settings cannot be safely restored by this version.")]
+    InvalidRemovalMetadata,
     /// A number in the command is NaN or infinite. No edit means one, and
     /// one stored would poison every duration and key that touched it.
     #[error("A number in that edit is not finite.")]
@@ -959,6 +999,7 @@ impl Command {
             }),
             Command::AddCutoutStroke { stroke, .. } => bad_stroke(stroke),
             Command::MoveClips { moves } => bad(moves.iter().map(|wanted| wanted.start)),
+            Command::AddClipWithAudio { start, .. } => bad([*start]),
             Command::TrimClip { delta, .. } => bad([*delta]),
             Command::SplitClips { time, .. } => bad([*time]),
             Command::FreezeFrame { time, duration, .. } => bad([*time]) || bad(*duration),
@@ -1060,6 +1101,10 @@ pub fn apply(
             })
         }
 
+        command @ Command::SetClipRemovalMode { .. } => removal::apply(project, command),
+        command @ (Command::AddClipWithAudio { .. } | Command::SetClipAvLinked { .. }) => {
+            av::apply(project, mint, command)
+        }
         command @ (Command::AddMedia { .. }
         | Command::SetMediaPlaceholder { .. }
         | Command::FillSlot { .. }

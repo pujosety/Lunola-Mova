@@ -1,123 +1,58 @@
-# Contributing to Concat
+# Contributing to Lunola Mova
 
-Thanks for being here. Concat is a video editor that runs entirely on the
-user's machine, and it gets better mostly through people using it hard and
-reporting what broke.
+Coordinate changes with the fork maintainer through the channel actually supplied
+with your checkout. No Lunola tracker, Discord or published build is established
+here; upstream does not provide official support for this fork.
 
-## The most valuable thing you can do
+## Build and verification
 
-Grab a build from the [Releases](https://github.com/jub0t/Concat/releases) page
-and edit a real video with it. Real footage finds what no reading of the
-source does. A good bug report — what you did, what happened, your
-OS, the media you used — is worth more than most patches.
+The workspace is `src/`. Rust package/library names remain `concat`; after
+product-identity integration the editor is `lunola-mova.exe`. Read the inherited
+[src/README.md](src/README.md) and pinned `src/rust-toolchain.toml`, `Cargo.lock`
+and native dependency lock before building. Native FFmpeg, sherpa, ONNX Runtime,
+CMake, C++ compiler/SDK and libclang must match the target/link configuration.
+Do not commit workstation-specific dependency paths.
 
-Longer-form discussion lives in
-[the contribution discussion](https://github.com/jub0t/Concat/discussions/3)
-and on [Discord](https://discord.gg/DVuPfpXfqP).
-
-## Before you write code
-
-Open an issue or drop into Discord first for anything beyond a small fix. Large
-areas are already in progress or intentionally deferred, and it is genuinely
-no fun to review a big PR that has to be turned down for reasons that were
-invisible from outside.
-
-## Setting up
-
-You will need Rust (see `rust-version` in `src/Cargo.toml`), the FFmpeg
-7+ development libraries (`brew install ffmpeg`; see `src/README.md` for
-Windows and Linux), cmake and a C++ compiler. Then:
+After prerequisites are ready, from `src/`:
 
 ```sh
-cd src && cargo run -p concat
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo build --profile app -p concat --target x86_64-pc-windows-msvc --locked
 ```
 
-That is the editor window. Everything - the engine, the host layer and the
-Slint UI - is one Cargo workspace under `src/`.
+These are requested checks, not recorded passes. Follow the actual CI
+nextest/doctest/gRPC/export and portability checks too. From repository root,
+run `python scripts/models.py --check` for model-table changes and
+`python scripts/locales.py` for UI string inventory changes. See
+[TRANSLATING.md](TRANSLATING.md). Do not publish models or invoke release
+workflows without reviewed rights and explicit authorization.
 
-## Layout
+Smoke the real application and clean-PATH staged DLL bundle; verify
+create/import/edit/save/reopen/export. Test inference/model downloads separately.
+Record exact commands, versions, exit codes, skips and evidence. Installer XML
+or staging inventory checks are not application tests. JSON-RPC/gRPC need their
+own tests; MCP is absent upstream and deferred, not an inherited working feature.
+Internal `CONCAT_*` compatibility names may remain pending deliberate migration.
 
-| Path | What lives there |
-|---|---|
-| `src/crates/` | The engine (core, media, render, export, project), the host layer (`concat-host`, `concat-speech`), the CLI, and `concat`, the Slint editor window |
+## License and authorship
 
-[`src/README.md`](src/README.md) explains how the crates fit together and
-where the sharp edges are. Read it before touching the engine.
+Retain existing SPDX headers, **2026 Jareer and Concat contributors**, third-party
+copyrights and full Git history. Add your own copyright for new work, never
+replace another author's line. New project source uses `AGPL-3.0-or-later` unless
+a reviewed, genuinely separate component has another compatible license.
+Read [LICENSE](LICENSE), [exceptions](LICENSE-EXCEPTIONS.md),
+[third-party notices](THIRD_PARTY_NOTICES.md) and [TRADEMARK.md](TRADEMARK.md).
 
-## Checks
+[CLA.md](CLA.md) remains upstream provenance. It names upstream and must not be
+assumed to grant the Lunola maintainer equivalent rights. A sign-off does not
+automatically extend that CLA. Fork contribution/exception policy requires
+explicit review before accepting external contributions. Attribution transfers
+neither ownership nor trademark rights.
 
-Run these before opening a PR:
-
-```sh
-cd src && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
-```
-
-If you added or changed text the interface shows, also run
-`python3 scripts/locales.py` so the string inventory follows; CI checks it.
-Translations live in one JSON file per language — see
-[`TRANSLATING.md`](TRANSLATING.md).
-
-If you added or changed a downloadable model, put it in
-[`models/manifest.toml`](models/manifest.toml) as well as the engine table it
-belongs to, and run `python3 scripts/models.py --check`; CI checks that too.
-A maintainer then runs the *Mirror models* workflow, which fetches the model,
-records its digest in both places and publishes it to the mirror the app
-downloads from.
-
-Write what happens through the `log` facade — `log::info!`, `log::warn!`,
-`log::error!` — rather than to standard output or standard error. Every run
-writes `<app data>/logs/concat-<when>.log`, and a packaged build has no
-terminal for anything that goes anywhere else; `CONCAT_LOG=debug` turns the
-level up. See `src/crates/concat-host/src/logs.rs`.
-
-New source files need a licence header — see below. Match the style of the code
-around you; the engine avoids cleverness on purpose.
-
-## Licensing your contribution
-
-Concat is **AGPL-3.0-or-later** ([`LICENSE`](LICENSE)), with a plugin exception
-so that Concat API plugins can carry their own licence
-([`LICENSE-EXCEPTIONS.md`](LICENSE-EXCEPTIONS.md)).
-
-Contributions are accepted under the CLA in [`CLA.md`](CLA.md). **You keep the
-copyright in your work** — the CLA is a licence, not an assignment. It exists so
-that copyright in Concat stays centralised, which is what makes the AGPL
-enforceable against companies that take the code without honouring it.
-
-Sign off your commits to indicate agreement:
-
-```sh
-git commit -s -m "your message"
-```
-
-Typo and documentation fixes do not need a sign-off.
-
-### File headers
-
-Every source file starts with:
-
-```rust
-// SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
-```
-
-Keep your own copyright line if you want one — add it, don't replace what's
-there.
-
-### Third-party code
-
-If your patch brings in code you did not write, say so in the PR: what it is,
-where it came from, and its licence. Anything incompatible with
-AGPL-3.0-or-later cannot be merged, and licence problems are much cheaper to
-catch before a merge than after a release.
-
-## Trademarks
-
-The code is free to fork. The Concat name and logo are not covered by the AGPL
-grant — see [`TRADEMARK.md`](TRADEMARK.md). Forks are welcome; please ship them
-under your own name.
-
-## Conduct
-
-[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) applies to the repo, the Discussions
-and Discord.
+Document each imported dependency, artwork, font and model with origin, version,
+changes, actual full license/notices and redistribution conditions. Follow the
+[platform/legal packaging gates](docs/lunola/packaging-publication.md).
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) is retained; its upstream enforcement
+contacts are not automatically designated Lunola contacts.

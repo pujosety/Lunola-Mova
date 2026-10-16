@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
 
-//! Which release this is, which releases are out, and putting one of them
-//! in this one's place.
+//! Version parsing and legacy package mechanics, with fork updates disabled.
+//!
+//! Lunola Mova has no configured release endpoint. Discovery and manifest
+//! access return an actionable refusal without an HTTP client. Download,
+//! install and relaunch must pass [`update_policy`] before any side effect.
+//! The parsers and dormant platform implementations below are retained for
+//! compatibility and review, NOT an enabled update path for this fork.
 //!
 //! Every release on GitHub carries a `manifest.json` naming each
 //! platform's package with its URL, its size and its SHA-256 - the release
@@ -33,16 +38,22 @@ use std::sync::atomic::AtomicBool;
 use crate::dirs::AppDirs;
 use crate::models;
 
-/// The repository the releases are read from.
-pub const REPO: &str = "jub0t/Concat";
+/// No release repository has been configured for this fork.
+/// This is deliberately not the upstream Concat repository or a guessed URL.
+pub const REPO: Option<&str> = None;
+
+/// Actionable failure returned before update network, file or installer work.
+pub const UPDATES_DISABLED: &str = "Updates are disabled: no Lunola Mova release endpoint is configured. Obtain a verified Lunola Mova release from your distributor; do not install Concat updates.";
+
+/// Fail closed until a separately reviewed fork release/install policy exists.
+/// Neither environment variables nor model-mirror preferences enable updates.
+pub fn update_policy() -> Result<(), String> {
+    Err(UPDATES_DISABLED.to_owned())
+}
 
 /// The first release with a Version page: the earliest one a person can
-/// come back from, so the earliest one offered.
+/// come back from, so the earliest one offered by the retained parser.
 pub const FIRST_SWITCHABLE: Version = Version::new(0, 2, 5);
-
-/// GitHub's list of the repository's releases, newest first. A hundred
-/// covers years of releases at this pace.
-const RELEASES_URL: &str = "https://api.github.com/repos/jub0t/Concat/releases?per_page=100";
 
 /// What a download that was stopped says.
 pub const CANCELLED: &str = "the download was cancelled";
@@ -171,9 +182,9 @@ fn github_message(value: &serde_json::Value) -> String {
         )
 }
 
-/// Asks GitHub for the releases; see [`releases_from_json`].
+/// Release discovery is disabled: never ask upstream for fork updates.
 pub fn fetch_releases() -> Result<Vec<Release>, String> {
-    releases_from_json(&get_text(RELEASES_URL)?)
+    Err(UPDATES_DISABLED.to_owned())
 }
 
 /// Where this build sits among the releases.
@@ -412,19 +423,14 @@ pub fn package_from_manifest(
     })
 }
 
-/// Where a release's manifest is.
-pub fn manifest_url(tag: &str) -> String {
-    format!("https://github.com/{REPO}/releases/download/{tag}/manifest.json")
+/// No manifest URL is exposed until a fork endpoint is reviewed.
+pub fn manifest_url(_tag: &str) -> Result<String, String> {
+    Err(UPDATES_DISABLED.to_owned())
 }
 
-/// The package of `kind` for this machine in `release`, from its manifest.
-pub fn fetch_package(release: &Release, kind: PackageKind) -> Result<Package, String> {
-    package_from_manifest(
-        &get_text(&manifest_url(&release.tag))?,
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        kind,
-    )
+/// Refuses even a caller-supplied release before fetching its manifest.
+pub fn fetch_package(_release: &Release, _kind: PackageKind) -> Result<Package, String> {
+    Err(UPDATES_DISABLED.to_owned())
 }
 
 /// Where packages are downloaded to.
@@ -443,6 +449,7 @@ pub fn download_package(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<PathBuf, String> {
+    update_policy()?;
     std::fs::create_dir_all(folder)
         .map_err(|error| format!("could not create {}: {error}", folder.display()))?;
     let partial = folder.join(format!("{}.part", package.file));
@@ -487,6 +494,7 @@ pub enum Installed {
 /// Puts `package`, a file of `kind` already checked against its digest, in
 /// this build's place.
 pub fn install(package: &Path, kind: PackageKind) -> Result<Installed, String> {
+    update_policy()?;
     match kind {
         PackageKind::Setup => {
             Command::new(package)
@@ -614,6 +622,7 @@ fn replace_appimage(package: &Path) -> Result<Installed, String> {
 /// first. Nothing on Windows, where the installer offers to start the app
 /// itself.
 pub fn relaunch() -> Result<(), String> {
+    update_policy()?;
     if cfg!(target_os = "macos") {
         let bundle = own_bundle().ok_or_else(|| "not running from an app bundle".to_owned())?;
         detach(
@@ -666,36 +675,74 @@ fn detach(command: &mut Command) -> Result<(), String> {
         .map_err(|error| format!("could not start {program}: {error}"))
 }
 
-/// One GET, read whole as text. GitHub wants a user agent and says so with
-/// a 403 otherwise.
-fn get_text(url: &str) -> Result<String, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(20))
-        .timeout_read(std::time::Duration::from_secs(30))
-        .build();
-    let response = agent
-        .get(url)
-        .set("User-Agent", &format!("Concat/{}", Version::current()))
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|error| match error {
-            ureq::Error::Status(code, response) => {
-                let body = response.into_string().unwrap_or_default();
-                let said = serde_json::from_str::<serde_json::Value>(&body)
-                    .map(|value| github_message(&value))
-                    .unwrap_or_else(|_| body.chars().take(200).collect());
-                format!("{url} answered {code}: {said}")
-            }
-            other => format!("{url} did not answer: {other}"),
-        })?;
-    response
-        .into_string()
-        .map_err(|error| format!("{url} was cut short: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_discovery_refuses_before_any_network_request() {
+        assert_eq!(REPO, None);
+        assert_eq!(update_policy(), Err(UPDATES_DISABLED.to_owned()));
+        assert_eq!(fetch_releases(), Err(UPDATES_DISABLED.to_owned()));
+        let release = Release {
+            version: Version::current(),
+            tag: "../../upstream".to_owned(),
+            published: String::new(),
+        };
+        assert_eq!(manifest_url(&release.tag), Err(UPDATES_DISABLED.to_owned()));
+        assert_eq!(
+            fetch_package(&release, PackageKind::Setup),
+            Err(UPDATES_DISABLED.to_owned())
+        );
+    }
+
+    #[test]
+    fn download_refuses_even_a_caller_supplied_upstream_package_without_touching_disk() {
+        let root =
+            std::env::temp_dir().join(format!("lunola-mova-update-guard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("test directory");
+        let sentinel = root.join("keep.txt");
+        std::fs::write(&sentinel, b"keep").expect("sentinel");
+        let package = Package {
+            file: "../Concat-setup.exe".to_owned(),
+            url: "https://github.com/jub0t/Concat/releases/download/v0.2.6/setup.exe".to_owned(),
+            bytes: 0,
+            sha256: String::new(),
+        };
+        for folder in [root.clone(), root.join("absent")] {
+            let mut called = false;
+            let mut progress = |_, _| called = true;
+            assert_eq!(
+                download_package(&package, &folder, &AtomicBool::new(false), &mut progress),
+                Err(UPDATES_DISABLED.to_owned())
+            );
+            assert!(!called);
+        }
+        assert_eq!(std::fs::read(&sentinel).expect("untouched"), b"keep");
+        assert!(!root.join("absent").exists());
+        assert_eq!(std::fs::read_dir(&root).expect("contents").count(), 1);
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    #[test]
+    fn every_installer_kind_and_relaunch_refuse_before_side_effects() {
+        for kind in [
+            PackageKind::Setup,
+            PackageKind::Msi,
+            PackageKind::Dmg,
+            PackageKind::AppImage,
+            PackageKind::Deb,
+            PackageKind::Rpm,
+            PackageKind::Pacman,
+        ] {
+            assert_eq!(
+                install(Path::new("nonexistent-package"), kind),
+                Err(UPDATES_DISABLED.to_owned())
+            );
+        }
+        assert_eq!(relaunch(), Err(UPDATES_DISABLED.to_owned()));
+    }
 
     #[test]
     fn a_version_reads_a_tag_and_orders_by_its_numbers() {
@@ -848,10 +895,7 @@ mod tests {
         ] {
             assert!(!kind.key().is_empty());
         }
-        assert_eq!(
-            manifest_url("v0.2.6"),
-            "https://github.com/jub0t/Concat/releases/download/v0.2.6/manifest.json"
-        );
+        assert_eq!(manifest_url("v0.2.6"), Err(UPDATES_DISABLED.to_owned()));
     }
 
     #[test]

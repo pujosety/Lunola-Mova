@@ -11,6 +11,14 @@ words here, then render again, rather than editing twenty files by hand.
 The English README stays the one kept current; every translation says so
 at its top, with the date it was made.
 """
+# The original upstream renderer below is retained for provenance, not execution.
+# Fork READMEs are reviewed documents: never restore upstream badges/promotion.
+raise SystemExit(
+    "README regeneration is disabled for Lunola Mova: fork documentation is "
+    "frozen pending review. Edit the reviewed README files directly; the "
+    "preserved upstream renderer must not be used to publish fork docs."
+)
+
 import glob, importlib.util, os, sys, re
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))

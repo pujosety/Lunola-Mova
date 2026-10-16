@@ -29,6 +29,9 @@ export struct ExportData {
     open: bool,
     /// the file name, without folder or extension
     name: string,
+    /// 0 = movie, 1 = PNG sequence
+    output-kind: int,
+    output-kinds: [string],
     /// the whole path, already shortened for display by whoever owns it
     path: string,
     /// "1920 x 1080 · 30.00 fps"
@@ -308,9 +311,19 @@ component DestinationSection inherits DialogSection {
     in property <bool> phone;
 
     callback name-edited(name: string);
+    callback format-changed(index: int);
     callback browse();
 
     title: I18n.t("export.destination");
+
+    DialogRow {
+        label: I18n.t("export.format");
+        Select {
+            current: root.data.output-kind;
+            options: root.data.output-kinds;
+            changed(index) => { root.format-changed(index); }
+        }
+    }
 
     DialogRow {
         Field {
@@ -703,6 +716,7 @@ export component ExportDialog inherits Rectangle {
 
     callback closed();
     callback name-edited(name: string);
+    callback format-changed(index: int);
     callback browse();
     callback resolution-changed(index: int);
     callback rate-changed(index: int);
@@ -836,6 +850,7 @@ export component ExportDialog inherits Rectangle {
                             data: root.data;
                             phone: root.phone;
                             name-edited(name) => { root.name-edited(name); }
+                            format-changed(index) => { root.format-changed(index); }
                             browse => { root.browse(); }
                         }
                         if !root.running: OutputSection {
@@ -883,6 +898,7 @@ export component ExportDialog inherits Rectangle {
                                 data: root.data;
                                 phone: root.phone;
                                 name-edited(name) => { root.name-edited(name); }
+                                format-changed(index) => { root.format-changed(index); }
                                 browse => { root.browse(); }
                             }
                             QualitySection {
@@ -950,6 +966,7 @@ export component ExportDialog inherits Rectangle {
                                 data: root.data;
                                 phone: root.phone;
                                 name-edited(name) => { root.name-edited(name); }
+                                format-changed(index) => { root.format-changed(index); }
                                 browse => { root.browse(); }
                             }
                         }

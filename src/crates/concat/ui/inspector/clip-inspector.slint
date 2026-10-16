@@ -925,6 +925,10 @@ component Hairline inherits HorizontalLayout {
 /// its background is keyed out.
 export component VideoPanel inherits VerticalLayout {
     in property <SelectedClipData> selected;
+    /// Desktop's dedicated Cutout section shares the tested controls only.
+    in property <bool> cutout-only: false;
+    /// Phone retains its original combined panel by default.
+    in property <bool> show-cutout: true;
     /// The picture's chain and its knobs, for the cutout section: keying is
     /// a package on the chain like any effect, and this panel only gives
     /// it a switch and a name.
@@ -952,28 +956,20 @@ export component VideoPanel inherits VerticalLayout {
     /// What the automatic cutout keeps: 0 auto, 1 person, 2 object.
     callback cutout-subject(index: int);
     callback cutout-clear();
+    /// Background mode: 0 transparent, 1 blurred, 2 replaced.
+    callback cutout-background-mode(mode: int);
+    /// Background blur radius as a fraction of picture width.
+
+    /// Background replacement colour as 0xRRGGBB.
+    callback cutout-background-color(value: color);
 
     /// A shape is a figure, not footage: there is no background to take
     /// away and nothing to crop off its edges, so those sections stay out
     /// of its panel.
     property <bool> figure: root.selected.kind == ClipKind.shape;
 
-    /// Which keyer is on the chain, and where: -1 for none. Scans the first
-    /// eight links, as PresetStack does, for want of a model lookup.
-    pure function keyer-at(id: string) -> int {
-        return root.applied.length > 0 && root.applied[0].id == id ? 0
-            : root.applied.length > 1 && root.applied[1].id == id ? 1
-            : root.applied.length > 2 && root.applied[2].id == id ? 2
-            : root.applied.length > 3 && root.applied[3].id == id ? 3
-            : root.applied.length > 4 && root.applied[4].id == id ? 4
-            : root.applied.length > 5 && root.applied[5].id == id ? 5
-            : root.applied.length > 6 && root.applied[6].id == id ? 6
-            : root.applied.length > 7 && root.applied[7].id == id ? 7
-            : -1;
-    }
-    /// Where the chroma key is on the chain, -1 for nowhere; its screen
-    /// colour is a knob of its own, drawn below as a swatch.
-    property <int> keyer-index: root.keyer-at("concat.chroma-key");
+    /// Native full-chain lookup respects bypass state and legacy keyer IDs.
+    property <int> keyer-index: root.selected.removal-keyer-slot - 1;
     /// 0 off, 1 on: whether the chroma key is.
     property <int> keyer: root.keyer-index >= 0 ? 1 : 0;
     /// The Mode row: 0 off, 1 automatic, 2 custom, 3 chroma key. A key on
@@ -982,18 +978,9 @@ export component VideoPanel inherits VerticalLayout {
     property <int> removal: root.keyer == 1 ? 3 : root.selected.cutout;
     property <bool> masked: root.removal == 1 || root.removal == 2;
 
-    /// Puts one removal on and the others off: 0 none, 1 auto, 2 custom,
-    /// 3 chroma key. The key comes off the chain before anything else goes
-    /// on, and the cutout is set or cleared to match.
+    /// Preserve masks/keyer settings and switch through one engine command.
     function remove-by(index: int) {
-        if (root.keyer-index >= 0) {
-            root.chain-remove(root.keyer-index);
-        }
-        root.cutout-mode(index == 1 ? 1 : index == 2 ? 2 : 0);
-        if (index == 3) {
-            root.chain-add("concat.chroma-key");
-        }
-        root.commit();
+        root.cutout-mode(index);
     }
 
     property <float> scale;
@@ -1008,9 +995,21 @@ export component VideoPanel inherits VerticalLayout {
     property <float> crop-right;
     property <float> crop-bottom;
     property <float> feather;
+    property <int> background-mode;
+    property <float> background-blur;
+    property <color> background-color;
+    property <float> cutout-expansion;
+    property <float> cutout-edge-strength;
+    property <float> cutout-edge-radius;
 
     function seed() {
         root.feather = root.selected.cutout-feather;
+        root.background-mode = root.selected.cutout-background-mode;
+        root.background-blur = root.selected.cutout-background-blur;
+        root.background-color = root.selected.cutout-background-color;
+        root.cutout-expansion = root.selected.cutout-expansion;
+        root.cutout-edge-strength = root.selected.cutout-edge-strength;
+        root.cutout-edge-radius = root.selected.cutout-edge-radius;
         root.scale = root.selected.scale;
         root.offset-x = root.selected.offset-x;
         root.offset-y = root.selected.offset-y;
@@ -1036,7 +1035,7 @@ export component VideoPanel inherits VerticalLayout {
     init => { root.seed(); }
     changed selected => { root.seed(); }
 
-    Section {
+    if !root.cutout-only: Section {
         first: true;
         transform := SectionHeader {
             title: I18n.t("clipInspector.transform");
@@ -1189,9 +1188,10 @@ export component VideoPanel inherits VerticalLayout {
     // monitor over it - and chroma key drops a colour. A key is the chroma
     // package on the chain, which is why its knobs read from the chain's
     // own rows. One at a time: ticking a block unticks the others.
-    if !root.figure: Section {
+    if !root.figure && root.show-cutout: Section {
+        first: root.cutout-only;
         cutout := SectionHeader {
-            title: I18n.t("clipInspector.removeBackground");
+            title: root.cutout-only ? I18n.t("clipInspector.lunolaCutout") : I18n.t("clipInspector.removeBackground");
             collapsible: true;
             // On is whichever removal is set; going on picks the custom one
             // when strokes are waiting for it, the automatic one otherwise.
@@ -1326,6 +1326,38 @@ export component VideoPanel inherits VerticalLayout {
                 unit-scale: 100;
                 changed(v) => { root.set(ClipField.cutout-feather, v); root.commit(); }
             }
+            if root.masked: Param {
+                label: I18n.t("clipInspector.maskExpansion");
+                value <=> root.cutout-expansion;
+                minimum: -256;
+                maximum: 256;
+                step: 1;
+                default-value: 0;
+                fmt: ParamFormat.plain;
+                changed(v) => { root.set(ClipField.cutout-expansion, v); root.commit(); }
+            }
+            if root.masked: Param {
+                label: I18n.t("clipInspector.edgeStrength");
+                value <=> root.cutout-edge-strength;
+                minimum: 0;
+                maximum: 1;
+                step: 0.01;
+                default-value: 0;
+                fmt: ParamFormat.fraction;
+                unit: "%";
+                unit-scale: 100;
+                changed(v) => { root.set(ClipField.cutout-edge-strength, v); root.commit(); }
+            }
+            if root.masked: Param {
+                label: I18n.t("clipInspector.edgeRadius");
+                value <=> root.cutout-edge-radius;
+                minimum: 0;
+                maximum: 8;
+                step: 1;
+                default-value: 0;
+                fmt: ParamFormat.plain;
+                changed(v) => { root.set(ClipField.cutout-edge-radius, v); root.commit(); }
+            }
             if root.removal == 2 && root.selected.cutout-progress >= 0: AnalysisRow {
                 progress: root.selected.cutout-progress;
                 fetching: root.selected.cutout-fetching;
@@ -1395,12 +1427,52 @@ export component VideoPanel inherits VerticalLayout {
                     }
                 }
             }
+
+            // Background mode: transparent, blurred, or replaced.
+            if root.masked: Row {
+                label: I18n.t("clipInspector.background");
+                Select {
+                    options: [
+                        I18n.t("clipInspector.transparent"),
+                        I18n.t("clipInspector.blurred"),
+                        I18n.t("clipInspector.replaced")
+                    ];
+                    current: root.background-mode;
+                    changed(index) => { root.cutout-background-mode(index); }
+                }
+                HelpButton {
+                    text: I18n.t("clipInspector.trackBelowReplacement");
+                }
+            }
+            if root.masked && root.background-mode == 1: Param {
+                label: I18n.t("clipInspector.blurStrength");
+                value <=> root.background-blur;
+                minimum: 0.01;
+                maximum: 0.5;
+                step: 0.005;
+                default-value: 0.05;
+                fmt: ParamFormat.fraction;
+                unit: "%";
+                unit-scale: 100;
+                changed(v) => {
+                    root.set(ClipField.cutout-background-blur, v);
+                    root.commit();
+                }
+            }
+            if root.masked && root.background-mode == 2: ColourField {
+                label: I18n.t("common.color");
+                value: root.background-color;
+                alpha: false;
+                changed(colour) => {
+                    root.cutout-background-color(colour);
+                }
+            }
         }
     }
 
     // What is cut off the source before it is fitted. Fractions of the
     // source's own edges, so a crop survives a change of output size.
-    if !root.figure: Section {
+    if !root.figure && !root.cutout-only: Section {
         crop := SectionHeader {
             title: I18n.t("clipInspector.crop");
             collapsible: true;

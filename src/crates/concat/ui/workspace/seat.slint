@@ -110,9 +110,9 @@ export component Seat inherits Rectangle {
             filter-changed(filter) => { Editor.media-filter-changed(filter); }
             sort-changed(index) => { Editor.media-sort-changed(index); }
             floor-pressed => { Editor.blur(); }
-            select(id, additive) => {
+            select(id, additive, range) => {
                 Editor.blur();
-                Editor.media-select(id, additive);
+                Editor.media-select(id, additive, range);
             }
             band-selected(columns, from-col, to-col, from-row, to-row, additive) => {
                 Editor.media-band-selected(columns, from-col, to-col,
@@ -270,6 +270,9 @@ export component Seat inherits Rectangle {
             cutout-painting(on) => { Editor.cutout-painting(on); }
             cutout-subject(index) => { Editor.cutout-subject(index); }
             cutout-clear => { Editor.cutout-clear(); }
+            cutout-background-mode(mode) => { Editor.cutout-background-mode(mode); }
+
+            cutout-background-color(value) => { Editor.cutout-background-color(value); }
             clip-enhance-set(on) => { Editor.clip-enhance-set(on); }
             transition-remove => { Editor.transition-remove(); }
             transition-duration-set(seconds) => { Editor.transition-duration-set(seconds); }

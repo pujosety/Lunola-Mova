@@ -126,8 +126,17 @@ impl Monitor {
         }
     }
 
-    /// A compositor of its own on the window's device, for work off the
-    /// monitor's thread - the effect cards. None without a GPU here.
+    /// A compositor for work off the monitor's thread. Backends that cannot
+    /// safely share the monitor's queue return `None`; the worker then opens
+    /// its own compositor on its own thread.
+    #[cfg(feature = "gpu")]
+    pub fn off_thread(&self) -> Option<concat_render::WgpuCompositor> {
+        let gpu = self.gpu.as_ref()?;
+        let gpu = gpu.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        gpu.off_thread_sibling()
+    }
+
+    /// A compositor on the same device for synchronous work on this thread.
     #[cfg(feature = "gpu")]
     pub fn sibling(&self) -> Option<concat_render::WgpuCompositor> {
         let gpu = self.gpu.as_ref()?;

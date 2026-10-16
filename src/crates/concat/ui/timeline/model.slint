@@ -50,6 +50,9 @@ export enum TrackSize { auto, small, medium, large }
 /// the other.
 export struct TrackData {
     id: string,
+    /// Derived role, not a persisted change in track/compositing identity.
+    label: string,
+    audio: bool,
     visible: bool,
     muted: bool,
     /// What the header's dropdown shows, and what `height` was resolved from.
@@ -176,7 +179,8 @@ export enum ClipField {
     /// the air between the words and the background's edges, fractions of
     /// frame height on each axis
     background-padding-x, background-padding-y,
-    cutout-feather,
+    cutout-feather, cutout-background-blur,
+    cutout-expansion, cutout-edge-strength, cutout-edge-radius,
     /// which of the media's audio tracks the clip plays, as a row of
     /// Editor.audio-tracks
     audio-track,
@@ -333,7 +337,15 @@ export struct SelectedClipData {
     // at the playhead, so the picture is showing as shot
     cutout: int,
     cutout-subject: int,
+    /// One-based active keyer slot across the full native chain; zero means none.
+    removal-keyer-slot: int,
     cutout-feather: float,
+    cutout-background-mode: int,
+    cutout-background-blur: float,
+    cutout-background-color: color,
+    cutout-expansion: float,
+    cutout-edge-strength: float,
+    cutout-edge-radius: float,
     cutout-strokes: int,
     cutout-progress: float,
     cutout-fetching: bool,
