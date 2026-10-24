@@ -56,13 +56,12 @@ fn retained_cutout(clip: &Clip) -> Result<Option<Cutout>, CommandError> {
     {
         return Err(CommandError::InvalidRemovalMetadata);
     }
-    if let Some(strokes) = value.get("strokes").and_then(serde_json::Value::as_array) {
-        if strokes
+    if let Some(strokes) = value.get("strokes").and_then(serde_json::Value::as_array)
+        && strokes
             .iter()
             .any(|stroke| !valid_keys(stroke, &["tool", "size", "points", "at"]))
-        {
-            return Err(CommandError::InvalidRemovalMetadata);
-        }
+    {
+        return Err(CommandError::InvalidRemovalMetadata);
     }
     let cutout: Cutout =
         serde_json::from_value(value.clone()).map_err(|_| CommandError::InvalidRemovalMetadata)?;

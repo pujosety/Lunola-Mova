@@ -5,4 +5,5 @@
 #[path = "../../concat/src/ripple_trim.rs"]
 mod ripple_trim;
 #[path = "../../concat/src/timeline_av.rs"]
+#[allow(dead_code)] // This harness exercises only the ripple-trim entry points.
 mod timeline_av;

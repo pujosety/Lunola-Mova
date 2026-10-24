@@ -232,7 +232,7 @@ fn a_locked_partner_blocks_qw_and_pointer_timing_without_partial_edits() {
     assert!(
         ripple_trim::plan(
             timeline,
-            &[id.clone()],
+            std::slice::from_ref(&id),
             3.0,
             concat_project::commands::TrimEdge::Start,
             |track| track == audio_track
@@ -401,14 +401,20 @@ fn linked_timing_targets_include_sound_but_unlink_restores_independent_editing()
             .unwrap();
     let id = editor.apply(add).unwrap().created_id.unwrap();
     let targets =
-        timeline_av::targets(editor.project().active(), &[id.clone()], |_| false).unwrap();
+        timeline_av::targets(editor.project().active(), std::slice::from_ref(&id), |_| {
+            false
+        })
+        .unwrap();
     assert_eq!(targets.len(), 2, "linked timing must include audio");
     let unlink: Command =
         serde_json::from_value(json!({"op":"setClipAvLinked", "clipId":id, "linked":false}))
             .unwrap();
     editor.apply(unlink).unwrap();
     assert_eq!(
-        timeline_av::targets(editor.project().active(), &[id.clone()], |_| false).unwrap(),
+        timeline_av::targets(editor.project().active(), std::slice::from_ref(&id), |_| {
+            false
+        })
+        .unwrap(),
         vec![id]
     );
 }
