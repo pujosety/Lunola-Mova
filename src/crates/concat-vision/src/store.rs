@@ -84,7 +84,6 @@ pub struct MaskStore {
     times: Vec<u64>,
     /// The model that made them, as the directory's `model` file says.
     model: Option<String>,
-    generation: u64,
 }
 
 impl MaskStore {
@@ -111,7 +110,6 @@ impl MaskStore {
             dir: dir.to_path_buf(),
             times,
             model,
-            generation: Self::generation(dir),
         }
     }
 
@@ -395,12 +393,6 @@ impl<K: Clone + Eq + std::hash::Hash, V: Clone> Recent<K, V> {
         }
     }
 
-    fn remove(&mut self, key: &K) {
-        if self.map.remove(key).is_some() {
-            self.order.retain(|held| held != key);
-        }
-    }
-
     fn retain(&mut self, keep: impl Fn(&K) -> bool) {
         self.map.retain(|key, _| keep(key));
         self.order.retain(|key| keep(key));
@@ -421,8 +413,10 @@ fn advance(dir: &Path) -> u64 {
     generations[dir]
 }
 
-fn mask_cache() -> &'static Mutex<Recent<(PathBuf, u64), Arc<Mask>>> {
-    static CACHE: OnceLock<Mutex<Recent<(PathBuf, u64), Arc<Mask>>>> = OnceLock::new();
+type MaskCache = Mutex<Recent<(PathBuf, u64), Arc<Mask>>>;
+
+fn mask_cache() -> &'static MaskCache {
+    static CACHE: OnceLock<MaskCache> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(Recent::new()))
 }
 
