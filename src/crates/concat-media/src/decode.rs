@@ -777,10 +777,7 @@ impl Decoder {
             Self::open_codec(&self.path, &stream, &self.options, None)?.0
         };
         let at = from.unwrap_or(self.origin);
-        let target = ffi::av_ticks(at + self.start);
-        self.input
-            .seek(target, ..=target)
-            .map_err(|error| ffi::fail("seek", &self.path, error))?;
+        self.seek_input(ffi::av_ticks(at + self.start))?;
         self.decoder = decoder;
         self.hardware = None;
         if !self.options.keyframes_only {
@@ -793,12 +790,24 @@ impl Decoder {
         Ok(())
     }
 
-    /// The container seek, and the state reset that goes with it.
-    fn jump(&mut self, to: Rational) -> Result<()> {
-        let target = ffi::av_ticks(to + self.start);
+    /// Seeks to the keyframe at or before `target`, falling back to the
+    /// start when a damaged/missing keyframe table refuses a bounded seek.
+    fn seek_input(&mut self, target: i64) -> Result<()> {
         self.input
             .seek(target, ..=target)
-            .map_err(|error| ffi::fail("seek", &self.path, error))?;
+            .or_else(|error| {
+                log::debug!(
+                    "{}: no keyframe at or before {target}, reading from the top ({error})",
+                    self.path.display()
+                );
+                self.input.seek(0, ..=0).map_err(|_| error)
+            })
+            .map_err(|error| ffi::fail("seek", &self.path, error))
+    }
+
+    /// The container seek, and the state reset that goes with it.
+    fn jump(&mut self, to: Rational) -> Result<()> {
+        self.seek_input(ffi::av_ticks(to + self.start))?;
         self.decoder.flush();
         // Keyframes only: the picture the container landed on is the one
         // wanted, and discarding up to the target would throw it away and
@@ -1169,6 +1178,22 @@ mod tests {
         assert!(
             (0.45..0.65).contains(&at),
             "after a seek to 0.5 s the frame is at {at}"
+        );
+    }
+
+    #[test]
+    fn a_seek_before_the_second_keyframe_of_a_vlc_mp4_lands() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/vlc-first-picture-not-a-keyframe.mp4"
+        );
+        let mut decoder = Decoder::open(path, &DecodeOptions::default()).expect("opens");
+        decoder.seek(Rational::from_int(1)).expect("seeks");
+        let _ = decoder.next_frame().expect("decodes").expect("a frame");
+        let at = decoder.position().expect("a position").as_f64();
+        assert!(
+            (0.95..1.15).contains(&at),
+            "after a seek to 1 s the frame is at {at}"
         );
     }
 

@@ -330,26 +330,22 @@ pub fn select_backend(
 ) -> Result<Option<Gpu>, PlatformError> {
     // The device the renderer and the monitor share. Taken first, because
     // the backend is selected with it.
-    let gpu = Gpu::acquire();
-    match &gpu {
-        None => log::warn!("no GPU adapter; the monitor composites on the CPU"),
-        // A software adapter is refused by Slint's selector unless this
-        // variable says otherwise: it enumerates the adapters on the instance
-        // it was handed, finds none that is a GPU, and `select` fails with
-        // "no GPU-backed WGPU adapter is available". From a double-clicked
-        // GUI build that failure went to a console nobody could see, and the
-        // app just never appeared. Setting it here is what the reporter did
-        // by hand, and the window, the editing and the export all worked on
-        // WARP - so the app does it for them and says so in the log.
-        // https://github.com/jub0t/Concat/issues/135
-        Some(gpu) if gpu.is_software() => {
-            log::warn!("the GPU adapter is a software rasteriser; the window will render slowly");
-            // SAFETY: the process is single-threaded at this point - the
-            // backend, the engine's threads and the window all come after
-            // this function - so nothing reads the environment concurrently.
-            unsafe { std::env::set_var("SLINT_WGPU_CPU", "1") };
-        }
-        Some(_) => {}
+    let mut gpu = Gpu::acquire();
+    // Do not share WARP between Skia and the monitor compositor. The window
+    // uses Skia's CPU renderer while the monitor creates its own software
+    // device, avoiding device-removal panics that can otherwise take down
+    // editing and export together.
+    let software = gpu.as_ref().is_some_and(Gpu::is_software);
+    if software {
+        log::warn!(
+            "the GPU adapter is a software rasteriser; the window draws on the CPU and the monitor on a device of its own"
+        );
+        // SAFETY: this runs before the backend, worker threads, and window
+        // are created, so no concurrent reader can observe a partial change.
+        unsafe { std::env::set_var("CONCAT_GPU", "software") };
+        gpu = None;
+    } else if gpu.is_none() {
+        log::warn!("no GPU adapter; the monitor composites on the CPU");
     }
 
     let mut selector = slint::BackendSelector::new()
@@ -357,6 +353,7 @@ pub fn select_backend(
         .with_winit_custom_application_handler(DropHandler::new(on_files_dropped, on_pressed_away));
     selector = match &gpu {
         Some(gpu) => selector.require_wgpu_30(gpu.configuration()),
+        None if software => selector.renderer_name("skia-software".into()),
         None => {
             // Without a shared device, ask for the platform's own API by
             // name: Skia picks its surface from a cfg chain, and requiring

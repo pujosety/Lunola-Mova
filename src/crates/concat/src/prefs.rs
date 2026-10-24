@@ -9,8 +9,10 @@
 use crate::dock::SavedWorkspace;
 use concat_host::AppDirs;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const FILE: &str = "settings.json";
+static SAVE_SUFFIX: AtomicU64 = AtomicU64::new(0);
 
 /// Remembered preferences.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -152,20 +154,91 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:7420";
 impl Preferences {
     /// Reads the file, or the defaults when there is none.
     pub fn load(dirs: &AppDirs) -> Self {
-        std::fs::read(dirs.config.join(FILE))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        let path = dirs.config.join(FILE);
+        let Ok(bytes) = std::fs::read(&path) else {
+            return Self::default();
+        };
+        if let Ok(preferences) = serde_json::from_slice(&bytes) {
+            return preferences;
+        }
+        // A single field with the wrong shape should not reset every
+        // preference. Keep the original bytes before the next save repairs
+        // the settings file.
+        let _ = std::fs::copy(&path, path.with_extension("json.unreadable"));
+        let preferences = salvage(&bytes);
+        log::warn!(
+            "settings: {} did not read whole; kept what did",
+            path.display()
+        );
+        preferences
     }
 
     /// Writes the file. Best effort: a preference that did not stick is
-    /// not worth interrupting anyone over.
+    /// not worth interrupting anyone over. Write a unique staging file and
+    /// rename it into place so a crash or overlapping save leaves one whole
+    /// document. The config directory is account-specific; on Unix the file
+    /// itself is readable by this account alone because it contains a token.
     pub fn save(&self, dirs: &AppDirs) {
         let _ = std::fs::create_dir_all(&dirs.config);
-        if let Ok(encoded) = serde_json::to_vec_pretty(self) {
-            let _ = std::fs::write(dirs.config.join(FILE), encoded);
+        let Ok(encoded) = serde_json::to_vec_pretty(self) else {
+            return;
+        };
+        let path = dirs.config.join(FILE);
+        let staging = loop {
+            let suffix = SAVE_SUFFIX.fetch_add(1, Ordering::Relaxed);
+            let staging = dirs.config.join(format!(
+                "{FILE}.{}.{}.part",
+                std::process::id(),
+                suffix
+            ));
+            match write_private(&staging, &encoded) {
+                Ok(()) => break staging,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(_) => return,
+            }
+        };
+        if std::fs::rename(&staging, &path).is_err() {
+            let _ = std::fs::remove_file(&staging);
         }
     }
+}
+
+/// Keeps each top-level value that still deserializes over the defaults;
+/// one bad value costs itself rather than every setting.
+fn salvage(bytes: &[u8]) -> Preferences {
+    let Ok(serde_json::Value::Object(found)) = serde_json::from_slice(bytes) else {
+        return Preferences::default();
+    };
+    let Ok(serde_json::Value::Object(mut kept)) = serde_json::to_value(Preferences::default())
+    else {
+        return Preferences::default();
+    };
+    for (key, value) in found {
+        let before = kept.insert(key.clone(), value);
+        if serde_json::from_value::<Preferences>(serde_json::Value::Object(kept.clone())).is_err() {
+            match before {
+                Some(before) => {
+                    kept.insert(key, before);
+                }
+                None => {
+                    kept.remove(&key);
+                }
+            }
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(kept)).unwrap_or_default()
+}
+
+/// Writes a new staging file, private on Unix, and flushes it before rename.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 #[cfg(test)]
@@ -304,6 +377,47 @@ mod tests {
         prefs.save(&dirs);
         let loaded = Preferences::load(&dirs);
         assert_eq!(loaded.workspace_layout, Some(expected));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// One malformed field must not reset good settings, and the original
+    /// bytes must be preserved before the next save repairs the file.
+    #[test]
+    fn malformed_settings_keep_good_values_and_quarantine_original() {
+        let root =
+            std::env::temp_dir().join(format!("lunola-settings-salvage-{}", std::process::id()));
+        let dirs = AppDirs {
+            config: root.join("config"),
+            data: root.join("data"),
+        };
+        std::fs::create_dir_all(&dirs.config).expect("a config folder");
+        let original = br#"{"magnetic": true, "dark": "very", "locale": "id"}"#;
+        let path = dirs.config.join(FILE);
+        std::fs::write(&path, original).expect("a settings file");
+
+        let prefs = Preferences::load(&dirs);
+        assert!(prefs.magnetic, "a malformed dark value must not erase this");
+        assert_eq!(prefs.dark, None, "only the malformed field returns to default");
+        assert_eq!(prefs.locale.as_deref(), Some("id"));
+        assert_eq!(
+            std::fs::read(dirs.config.join("settings.json.unreadable")).expect("quarantine"),
+            original
+        );
+
+        prefs.save(&dirs);
+        let saved = std::fs::read(&path).expect("repaired settings");
+        let valid: Preferences = serde_json::from_slice(&saved).expect("complete saved JSON");
+        assert!(valid.magnetic);
+        assert_eq!(valid.locale.as_deref(), Some("id"));
+        let loaded = Preferences::load(&dirs);
+        assert!(loaded.magnetic);
+        assert_eq!(loaded.locale.as_deref(), Some("id"));
+        let part_files = std::fs::read_dir(&dirs.config)
+            .expect("listed")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".part"))
+            .count();
+        assert_eq!(part_files, 0);
         let _ = std::fs::remove_dir_all(root);
     }
 

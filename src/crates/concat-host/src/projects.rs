@@ -11,7 +11,10 @@
 //! It describes this machine's history, and copying a project folder to
 //! another machine should not drag one person's recent files along with it.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -66,6 +69,53 @@ pub struct ProjectInfo {
     pub rate_den: i64,
     /// Milliseconds since the epoch.
     pub opened_at: u64,
+}
+
+/// A snapshot's position in this process's project write order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ticket(u64);
+
+/// Mints the next write ticket. For background saves, mint it when the
+/// document snapshot is captured, before dispatching the worker.
+pub fn ticket() -> Ticket {
+    Ticket(NEXT_TICKET.fetch_add(1, Ordering::Relaxed))
+}
+
+static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+
+/// Result of an ordered save.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Saved {
+    /// This snapshot reached the manifest.
+    Written,
+    /// A later snapshot was already written, so this older one was skipped.
+    Superseded,
+}
+
+struct Writes {
+    writing: Mutex<()>,
+    written: AtomicU64,
+}
+
+fn writes() -> &'static Mutex<HashMap<PathBuf, Arc<Writes>>> {
+    static WRITES: OnceLock<Mutex<HashMap<PathBuf, Arc<Writes>>>> = OnceLock::new();
+    WRITES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn project_key(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+}
+
+fn write_state(key: &Path) -> Arc<Writes> {
+    let mut all = writes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(all.entry(key.to_path_buf()).or_insert_with(|| {
+        Arc::new(Writes {
+            writing: Mutex::new(()),
+            written: AtomicU64::new(0),
+        })
+    }))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -158,40 +208,126 @@ pub fn create(
     })
 }
 
-/// Writes the whole project document to the project's manifest.
-///
-/// The document is passed through as opaque JSON rather than being mirrored
-/// into Rust types: the engine (`concat-project`) owns the canonical model and
-/// produced this document, and the host has no decisions to make about its
-/// contents beyond writing it safely.
-///
-/// Written to a temporary file and renamed into place, because a save
-/// interrupted halfway is worse than no save at all - a truncated manifest
-/// loses the project, while a failed rename leaves the previous one intact.
+/// Writes a captured document in call order. Background callers should mint
+/// a ticket at snapshot time and call [`save_ordered`] on their worker.
 pub fn save(path: &str, document: &serde_json::Value) -> Result<(), String> {
-    let root = PathBuf::from(path);
-    let manifest = manifest_path(&root);
-    let temporary = root.join(format!("{MANIFEST}.saving"));
+    save_ordered(path, document, ticket()).map(|_| ())
+}
 
+/// Writes a document captured at `ticket`. An older snapshot that arrives
+/// after a newer successful write is skipped rather than restoring stale data.
+pub fn save_ordered(
+    path: &str,
+    document: &serde_json::Value,
+    ticket: Ticket,
+) -> Result<Saved, String> {
+    let root = PathBuf::from(path);
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("could not create {}: {error}", root.display()))?;
 
+    let state = write_state(&project_key(&root));
+    let _writing = state
+        .writing
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if ticket.0 < state.written.load(Ordering::Acquire) {
+        return Ok(Saved::Superseded);
+    }
+
     let encoded = serde_json::to_vec_pretty(document)
         .map_err(|error| format!("could not encode the project: {error}"))?;
+    write_manifest(&root, &encoded)?;
+    state.written.store(ticket.0, Ordering::Release);
+    Ok(Saved::Written)
+}
 
-    // Written, then flushed to the disk, then renamed: a rename is only
-    // atomic over bytes that have reached the platter. Without the sync a
-    // power cut after the rename can leave a zero-length manifest.
-    let mut file = std::fs::File::create(&temporary)
-        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
-    std::io::Write::write_all(&mut file, &encoded)
-        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("could not flush {}: {error}", temporary.display()))?;
-    drop(file);
+/// A per-save temporary; Drop closes and removes it on every failure path.
+struct Temporary {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+    renamed: bool,
+}
 
-    std::fs::rename(&temporary, &manifest)
-        .map_err(|error| format!("could not replace {}: {error}", manifest.display()))
+impl Temporary {
+    fn open(root: &Path) -> Result<Self, String> {
+        let mut attempts = 0;
+        loop {
+            let nonce = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!("{MANIFEST}.saving.{}.{nonce}", std::process::id()));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        path,
+                        file: Some(file),
+                        renamed: false,
+                    });
+                }
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AlreadyExists && attempts < 16 =>
+                {
+                    attempts += 1;
+                }
+                Err(error) => return Err(format!("could not write {}: {error}", path.display())),
+            }
+        }
+    }
+
+    fn write(&mut self, encoded: &[u8]) -> Result<(), String> {
+        let file = self.file.as_mut().expect("new temporary is open");
+        std::io::Write::write_all(file, encoded)
+            .map_err(|error| format!("could not write {}: {error}", self.path.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("could not flush {}: {error}", self.path.display()))
+    }
+
+    fn commit(&mut self, manifest: &Path) -> Result<(), String> {
+        self.file.take();
+        let mut wait = std::time::Duration::from_millis(50);
+        let mut tries = 0;
+        loop {
+            match std::fs::rename(&self.path, manifest) {
+                Ok(()) => break,
+                Err(error) if tries < 5 && transient(&error) => {
+                    tries += 1;
+                    std::thread::sleep(wait);
+                    wait *= 2;
+                }
+                Err(error) => {
+                    return Err(format!("could not replace {}: {error}", manifest.display()));
+                }
+            }
+        }
+        self.renamed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Temporary {
+    fn drop(&mut self) {
+        self.file.take();
+        if !self.renamed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn transient(error: &std::io::Error) -> bool {
+    cfg!(windows)
+        && (error.kind() == std::io::ErrorKind::PermissionDenied
+            || matches!(error.raw_os_error(), Some(5 | 32)))
+}
+
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+fn write_manifest(root: &Path, encoded: &[u8]) -> Result<(), String> {
+    let manifest = manifest_path(root);
+    let mut temporary = Temporary::open(root)?;
+    temporary.write(encoded)?;
+    temporary.commit(&manifest)
 }
 
 /// True when a document carries no edit state at all - the settings-only
@@ -365,6 +501,98 @@ fn count_files(dir: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn save_scratch(label: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "concat-save-{label}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("scratch project folder");
+        root
+    }
+
+    fn save_document(name: &str) -> serde_json::Value {
+        serde_json::json!({ "name": name, "edit": { "revision": name } })
+    }
+
+    fn save_temporary_count(root: &Path) -> usize {
+        std::fs::read_dir(root)
+            .expect("reads scratch folder")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&format!("{MANIFEST}.saving"))
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_late_snapshot_never_lands_after_a_newer_one() {
+        let root = save_scratch("late-snapshot");
+        let path = root.to_string_lossy().into_owned();
+        let older = save_document("older");
+        let newer = save_document("newer");
+        let older_ticket = ticket();
+        let newer_ticket = ticket();
+
+        assert_eq!(
+            save_ordered(&path, &newer, newer_ticket).expect("newer write"),
+            Saved::Written
+        );
+        assert_eq!(
+            save_ordered(&path, &older, older_ticket).expect("older write is skipped"),
+            Saved::Superseded
+        );
+        assert_eq!(read_document(&path).expect("reads"), Some(newer));
+        assert_eq!(save_temporary_count(&root), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_snapshots_leave_the_highest_ticket_on_disk() {
+        let root = save_scratch("concurrent");
+        let path = root.to_string_lossy().into_owned();
+        let documents: Vec<_> = (0..8)
+            .map(|index| save_document(&format!("doc-{index}")))
+            .collect();
+        let tickets: Vec<_> = (0..documents.len()).map(|_| ticket()).collect();
+
+        std::thread::scope(|scope| {
+            for (document, ticket) in documents.iter().zip(&tickets) {
+                let path = path.clone();
+                scope.spawn(move || {
+                    save_ordered(&path, document, *ticket).expect("write succeeds");
+                });
+            }
+        });
+
+        assert_eq!(
+            read_document(&path).expect("reads"),
+            Some(documents.last().expect("documents").clone())
+        );
+        assert_eq!(save_temporary_count(&root), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_failed_ordered_save_preserves_the_manifest_and_cleans_its_temp() {
+        let root = save_scratch("failed");
+        let path = root.to_string_lossy().into_owned();
+        let manifest = root.join(MANIFEST);
+        std::fs::create_dir(&manifest).expect("block manifest replacement");
+        let sentinel = manifest.join("keep");
+        std::fs::write(&sentinel, b"keep").expect("sentinel");
+
+        assert!(save_ordered(&path, &save_document("new"), ticket()).is_err());
+        assert!(sentinel.exists(), "failed save leaves prior data intact");
+        assert_eq!(save_temporary_count(&root), 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn sanitises_names_windows_would_reject() {

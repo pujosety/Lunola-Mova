@@ -18,6 +18,16 @@ use std::rc::Rc;
 
 use slint::{ModelRc, SharedString, VecModel};
 
+/// Runs the exit action only after the current project has saved and closed.
+pub(crate) fn close_window(
+    close: impl FnOnce() -> Result<(), String>,
+    leave: impl FnOnce(),
+) -> Result<(), String> {
+    close()?;
+    leave();
+    Ok(())
+}
+
 // `DataTransfer` is what a drag carries. Slint keeps the platform's drag
 // object opaque and leaves building and reading one to the host language.
 use slint::private_unstable_api::re_exports::DataTransfer;
@@ -97,6 +107,16 @@ use panes::start::StartMsg;
 use panes::timeline::TimelineMsg;
 use studio::{ASPECTS, Models, OUTPUTS, RATES, SIZES, Studio};
 use ui::*;
+
+/// Whether Slint currently gives a text field the keyboard focus.
+fn typing(app: &App) -> bool {
+    use slint::private_unstable_api::re_exports::{TextInput, WindowInner};
+    WindowInner::from_pub(app.window())
+        .focus_item
+        .borrow()
+        .upgrade()
+        .is_some_and(|item| item.downcast::<TextInput>().is_some())
+}
 
 /// Opens this run's log file and makes it where the app writes things down.
 ///
@@ -438,21 +458,41 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
-            shell.studio.borrow_mut().close_project();
-            log::info!("close: project closed, hiding window");
-            app.window().hide().ok();
-            slint::quit_event_loop().ok();
-            log::info!("close: quit_event_loop called");
+            if let Err(error) = close_window(
+                || shell.studio.borrow_mut().close_project(),
+                || {
+                    log::info!("close: project closed, hiding window");
+                    app.window().hide().ok();
+                    slint::quit_event_loop().ok();
+                    log::info!("close: quit_event_loop called");
+                },
+            ) {
+                log::warn!("close: save failed; keeping window open: {error}");
+                shell.studio.borrow_mut().refresh_art();
+                shell.studio.borrow().publish(&app, &shell.models);
+            }
         });
     });
     // System-driven close (Alt+F4, taskbar close): the same road out.
     app.window().on_close_requested(|| {
         log::info!("close: system close request (Alt+F4 / taskbar)");
-        Shell::with(|shell, _app| {
-            shell.studio.borrow_mut().close_project();
+        let mut response = slint::CloseRequestResponse::KeepWindowShown;
+        Shell::with(|shell, app| {
+            match close_window(
+                || shell.studio.borrow_mut().close_project(),
+                || {
+                    slint::quit_event_loop().ok();
+                },
+            ) {
+                Ok(()) => response = slint::CloseRequestResponse::HideWindow,
+                Err(error) => {
+                    log::warn!("close: save failed; keeping window open: {error}");
+                    shell.studio.borrow_mut().refresh_art();
+                    shell.studio.borrow().publish(&app, &shell.models);
+                }
+            }
         });
-        slint::quit_event_loop().ok();
-        slint::CloseRequestResponse::HideWindow
+        response
     });
     // Maximised or not is read back on every resize rather than tracked:
     // the platform can maximise the window without us - a drag to the top
@@ -1319,16 +1359,24 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // window where no key reaches anything. See Focus in util.slint.
     app.global::<Focus>()
         .on_release(|| Shell::with(|_, app| app.invoke_blur()));
-    editor.on_shortcut(move |action: SharedString| match action.as_str() {
-        "import" | "export" | "settings" | "zoom-in" | "zoom-out" | "start" | "end" | "snap"
-        | "magnetic" | "pan" | "preview-axis" => {
-            Shell::with(|_, app| app.invoke_app_menu_selected(action.clone()));
-        }
-        _ => Shell::with(|shell, app| {
-            shell.studio.borrow_mut().shortcut(action.as_str());
-            shell.studio.borrow_mut().refresh_art();
-            shell.studio.borrow().publish(&app, &shell.models);
-        }),
+    editor.on_shortcut(move |action: SharedString| {
+        let action = action.to_string();
+        Shell::with(|shell, app| {
+            if action != "save" && (typing(&app) || shell.studio.borrow().sheet_open()) {
+                return;
+            }
+            match action.as_str() {
+                "import" | "export" | "settings" | "zoom-in" | "zoom-out" | "start" | "end"
+                | "snap" | "magnetic" | "pan" | "preview-axis" => {
+                    app.invoke_app_menu_selected(SharedString::from(action.clone()));
+                }
+                _ => {
+                    shell.studio.borrow_mut().shortcut(&action);
+                    shell.studio.borrow_mut().refresh_art();
+                    shell.studio.borrow().publish(&app, &shell.models);
+                }
+            }
+        });
     });
 
     // ── the project sheet ──
@@ -1678,8 +1726,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     app.on_app_menu_selected({
         move |action| {
+            let action = action.to_string();
             log::info!("menu: {action}");
             Shell::with(|shell, app| {
+                if action != "save" && (typing(&app) || shell.studio.borrow().sheet_open()) {
+                    return;
+                }
                 {
                     let mut state = shell.studio.borrow_mut();
                     state.open_menu = -1;
@@ -1706,7 +1758,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                         "speech" => state.handle(Msg::Speech(SpeechMsg::Open)),
                         "clear-cache" => state.clear_project_cache(),
                         "settings" => state.handle(Msg::Settings(SettingsMsg::Open)),
-                        "close-project" => state.close_project(),
+                        "close-project" => {
+                            let _ = state.close_project();
+                        }
                         "undo" => state.undo(),
                         "redo" => state.redo(),
                         "snap" => state.handle(Msg::Timeline(TimelineMsg::SnapToggled)),
@@ -1745,10 +1799,18 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 }
                 if action == "close-window" {
                     log::info!("close: File > Close Window");
-                    shell.studio.borrow_mut().close_project();
-                    app.window().hide().ok();
-                    slint::quit_event_loop().ok();
-                    log::info!("close: quit_event_loop called (menu)");
+                    if let Err(error) = close_window(
+                        || shell.studio.borrow_mut().close_project(),
+                        || {
+                            app.window().hide().ok();
+                            slint::quit_event_loop().ok();
+                            log::info!("close: quit_event_loop called (menu)");
+                        },
+                    ) {
+                        log::warn!("close: save failed; keeping window open: {error}");
+                        shell.studio.borrow_mut().refresh_art();
+                        shell.studio.borrow().publish(&app, &shell.models);
+                    }
                     return;
                 }
                 shell.studio.borrow_mut().refresh_art();

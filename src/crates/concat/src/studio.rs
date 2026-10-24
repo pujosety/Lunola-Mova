@@ -40,7 +40,8 @@ use concat_host::{
 use concat_media::{Pyramid, jpeg};
 use concat_project::commands::{ClipMove, ClipPatch, TrackFlag, TrimEdge};
 use concat_project::model::{
-    self, AppliedFilter, Clip, Project, TextAlign, TextStyle, Timeline, Track, Transition,
+    self, AppliedFilter, Clip, MediaItem, Project, TextAlign, TextStyle, Timeline, Track,
+    Transition,
 };
 use concat_project::{Command, why_not_merge};
 use slint::{Model, ModelRc, SharedString, VecModel};
@@ -1940,6 +1941,29 @@ pub enum Confirm {
 pub struct Held {
     pub row: usize,
     pub clip: Clip,
+    /// The source project's records for the clip's media and Enhance links.
+    /// Only metadata and paths are held; media files are never copied.
+    pub media: Vec<MediaItem>,
+}
+
+/// Makes a created clip like its source, while giving non-title clips a
+/// visible copy name. Placement and project-local media ids are preserved by
+/// the engine command.
+fn match_command(source: &Clip, created: &str) -> Command {
+    let mut like = source.clone();
+    if like.text.is_none() {
+        like.name = format!("{} copy", source.name);
+    }
+    Command::MatchClip {
+        clip_id: created.to_owned(),
+        like: Box::new(like),
+    }
+}
+
+fn same_folder(left: &str, right: &str) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| std::path::PathBuf::from(left));
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| std::path::PathBuf::from(right));
+    model::same_media_path(&left.to_string_lossy(), &right.to_string_lossy())
 }
 
 /// Where each held clip lands: `(row, start)` per clip in the order held,
@@ -1973,6 +1997,33 @@ fn paste_plan(
             Some((row, base + (held.clip.start - origin)))
         })
         .collect()
+}
+
+/// A paste is all-or-nothing: one clip without a destination means none are
+/// placed, rather than silently shrinking the copied group.
+fn complete_paste_plan(plan: Vec<Option<(usize, f64)>>) -> Option<Vec<(usize, f64)>> {
+    plan.into_iter().collect()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HeldMediaResolution {
+    Existing(String),
+    Missing,
+    Incompatible,
+}
+
+/// Reuse a same-path media record only when the target project classifies it
+/// the same way; otherwise the clip cannot safely bind to that record.
+fn held_media_resolution(project: &Project, item: &MediaItem) -> HeldMediaResolution {
+    match project
+        .media
+        .iter()
+        .find(|mine| model::same_media_path(&mine.path, &item.path))
+    {
+        Some(mine) if mine.kind == item.kind => HeldMediaResolution::Existing(mine.id.clone()),
+        Some(_) => HeldMediaResolution::Incompatible,
+        None => HeldMediaResolution::Missing,
+    }
 }
 
 /// Each rewritten link as "Old → New", the new one by its package's name.
@@ -2409,6 +2460,12 @@ impl Studio {
     }
 
     pub fn apply(&mut self, command: Command) -> Option<String> {
+        self.apply_result(command).ok().flatten()
+    }
+
+    /// Applies one command, distinguishing an accepted command with no
+    /// created id from a refused command so compound edits can roll back.
+    fn apply_result(&mut self, command: Command) -> Result<Option<String>, ()> {
         // An edit ends whatever burst the view was in.
         self.end_burst();
         log::info!("edit: {}", command_name(&command));
@@ -2417,7 +2474,7 @@ impl Studio {
         // Anything but an inspector commit ends the coalescing window; the
         // commit path sets `last_commit` again right after calling here.
         self.last_commit = None;
-        let session = self.session.as_mut()?;
+        let session = self.session.as_mut().ok_or(())?;
         let chosen = matches!(command, Command::SetTimelineVideo { .. });
         let before = session.video().color_space;
         match session.apply(command) {
@@ -2427,11 +2484,11 @@ impl Studio {
                 if !chosen {
                     self.tell_of_hdr(before, after);
                 }
-                view.created_id
+                Ok(view.created_id)
             }
             Err(error) => {
                 self.notify(&error, true);
-                None
+                Err(())
             }
         }
     }
@@ -2440,22 +2497,30 @@ impl Studio {
     /// bookkeeping, but the editor folds it into the gesture's undo step
     /// and the coalescing window stays open for the next move.
     fn apply_within(&mut self, gesture: &str, command: Command) -> Option<String> {
+        self.apply_within_result(gesture, command).ok().flatten()
+    }
+
+    fn apply_within_result(
+        &mut self,
+        gesture: &str,
+        command: Command,
+    ) -> Result<Option<String>, ()> {
         // A knob's gesture, folded into one step; said at Debug, since a
         // dial turned is many of these.
         log::debug!("edit: {} ({gesture})", command_name(&command));
         self.echo = None;
-        let session = self.session.as_mut()?;
+        let session = self.session.as_mut().ok_or(())?;
         let before = session.video().color_space;
         match session.apply_within(Some(gesture), command) {
             Ok(view) => {
                 let after = session.video().color_space;
                 self.after_change();
                 self.tell_of_hdr(before, after);
-                view.created_id
+                Ok(view.created_id)
             }
             Err(error) => {
                 self.notify(&error, true);
-                None
+                Err(())
             }
         }
     }
@@ -2467,6 +2532,13 @@ impl Studio {
         match gesture {
             Some(gesture) => self.apply_within(gesture, command),
             None => self.apply(command),
+        }
+    }
+
+    fn apply_in_checked(&mut self, gesture: Option<&str>, command: Command) -> bool {
+        match gesture {
+            Some(gesture) => self.apply_within_result(gesture, command).is_ok(),
+            None => self.apply_result(command).is_ok(),
         }
     }
 
@@ -2558,12 +2630,13 @@ impl Studio {
         };
         self.autosave.stop();
         let (path, document) = session.prepare_save(None);
+        let ticket = projects::ticket();
         self.dirty = false;
-        spawn(
-            move || projects::save(&path, &document),
+        spawn_in_project(
+            move || projects::save_ordered(&path, &document, ticket),
             move |studio, _, _, result| match result {
-                Ok(()) if announce => studio.notify(&t("studio.projectSaved"), false),
-                Ok(()) => {}
+                Ok(_) if announce => studio.notify(&t("studio.projectSaved"), false),
+                Ok(_) => {}
                 Err(error) => {
                     studio.dirty = true;
                     studio.notify(&tf("studio.couldNotSave", &[&error]), true);
@@ -7102,7 +7175,15 @@ impl Studio {
             .filter_map(|id| {
                 let clip = self.clip(id)?.clone();
                 let row = tracks.iter().position(|track| track.id == clip.track_id)?;
-                Some(Held { row, clip })
+                let media_ids = clip.media_ids();
+                let media = self
+                    .project()
+                    .media
+                    .iter()
+                    .filter(|item| media_ids.contains(&item.id.as_str()))
+                    .cloned()
+                    .collect();
+                Some(Held { row, clip, media })
             })
             .collect();
         if held.is_empty() {
@@ -7149,18 +7230,47 @@ impl Studio {
             }
             None => (f64::from(self.playhead), 0),
         };
-        let plan = paste_plan(&held, base, shift, tracks.len(), &|row| {
-            tracks.get(row).is_some_and(|id| self.locked(id))
-        });
+        let Some(plan) =
+            complete_paste_plan(paste_plan(&held, base, shift, tracks.len(), &|row| {
+                tracks.get(row).is_some_and(|id| self.locked(id))
+            }))
+        else {
+            return;
+        };
         self.flush_commit();
+        let Some(before) = self
+            .session
+            .as_ref()
+            .map(|session| session.project().clone())
+        else {
+            return;
+        };
+        if let Some(session) = self.session.as_mut() {
+            session.end_gesture();
+        }
         let mut created = Vec::new();
-        for (held, place) in held.iter().zip(plan) {
-            let Some((row, start)) = place else {
-                continue;
+        let mut failed = false;
+        for (held, (row, start)) in held.iter().zip(plan) {
+            let Some(source) = self.held_here(held) else {
+                failed = true;
+                break;
             };
-            if let Some(id) = self.place_copy(&held.clip, &tracks[row], start, Some("paste")) {
-                created.push(id);
+            let Some(id) = self.place_copy(&source, &tracks[row], start, Some("paste")) else {
+                failed = true;
+                break;
+            };
+            created.push(id);
+        }
+        if failed {
+            let rolled_back = self
+                .session
+                .as_mut()
+                .is_some_and(|session| session.rollback_gesture_if_project_changed(&before));
+            if rolled_back {
+                self.after_change();
             }
+            log::warn!("paste: cancelled after an edit command was refused");
+            return;
         }
         // One step for the lot, and the next paste a step of its own.
         if let Some(session) = self.session.as_mut() {
@@ -7169,6 +7279,32 @@ impl Studio {
         if !created.is_empty() {
             self.selection = created;
         }
+    }
+
+    /// Binds held source media to this project by path, adding complete
+    /// metadata records with fresh ids when needed, then rewrites all clip
+    /// and Enhance references. The files themselves are never copied.
+    fn held_here(&mut self, held: &Held) -> Option<Clip> {
+        let mut clip = held.clip.clone();
+        let mut mapping = HashMap::new();
+        for item in &held.media {
+            let id = match held_media_resolution(self.project(), item) {
+                HeldMediaResolution::Existing(id) => id,
+                HeldMediaResolution::Incompatible => {
+                    log::warn!("paste: same media path has incompatible media kinds");
+                    return None;
+                }
+                HeldMediaResolution::Missing => self.apply_in(
+                    Some("paste"),
+                    Command::CopyMediaRecord {
+                        item: Box::new(item.clone()),
+                    },
+                )?,
+            };
+            mapping.insert(item.id.clone(), id);
+        }
+        clip.remap_media_ids(&mapping);
+        Some(clip)
     }
 
     /// Lays a copy of `source` on `track_id` starting at `start` - its
@@ -7187,8 +7323,8 @@ impl Studio {
         start: f64,
         gesture: Option<&str>,
     ) -> Option<String> {
-        if source.kind == model::ClipKind::Text {
-            return self.apply_in(
+        let created = if source.kind == model::ClipKind::Text {
+            self.apply_in(
                 gesture,
                 Command::AddTextClip {
                     above: false,
@@ -7198,10 +7334,9 @@ impl Studio {
                     duration: Some(source.duration),
                     offset_y: Some(source.offset_y),
                 },
-            );
-        }
-        if source.kind == model::ClipKind::Shape {
-            return self.apply_in(
+            )?
+        } else if source.kind == model::ClipKind::Shape {
+            self.apply_in(
                 gesture,
                 Command::AddShapeClip {
                     above: false,
@@ -7211,17 +7346,24 @@ impl Studio {
                     duration: Some(source.duration),
                     name: source.name.clone(),
                 },
-            );
+            )?
+        } else {
+            self.apply_in(
+                gesture,
+                Command::AddClip {
+                    media_id: source.media_id.clone(),
+                    track_id: track_id.to_owned(),
+                    start: (start - source.source_start).max(0.0),
+                    ripple: false,
+                },
+            )?
+        };
+        if matches!(source.kind, model::ClipKind::Text | model::ClipKind::Shape) {
+            if !self.apply_in_checked(gesture, match_command(source, &created)) {
+                return None;
+            }
+            return Some(created);
         }
-        let created = self.apply_in(
-            gesture,
-            Command::AddClip {
-                media_id: source.media_id.clone(),
-                track_id: track_id.to_owned(),
-                start: (start - source.source_start).max(0.0),
-                ripple: false,
-            },
-        )?;
         let placed = self.clip(&created).cloned()?;
         let mut commands = Vec::new();
         let head = start - placed.start;
@@ -7257,44 +7399,10 @@ impl Studio {
                 curve: source.speed_curve.clone(),
             });
         }
-        commands.push(Command::SetClipTransform {
-            clip_id: created.clone(),
-            scale: Some(source.scale),
-            offset_x: Some(source.offset_x),
-            offset_y: Some(source.offset_y),
-            rotation: Some(source.rotation),
-            stretch_x: Some(source.stretch_x),
-            stretch_y: Some(source.stretch_y),
-        });
-        for key in &source.keys {
-            commands.push(Command::SetClipKey {
-                clip_id: created.clone(),
-                property: key.property,
-                at: key.at,
-                value: key.value,
-                ease: key.ease,
-            });
+        commands.push(match_command(source, &created));
+        if !self.apply_in_checked(gesture, Command::Batch { commands }) {
+            return None;
         }
-        commands.push(Command::UpdateClip {
-            clip_id: created.clone(),
-            patch: ClipPatch {
-                name: Some(format!("{} copy", source.name)),
-                volume: Some(source.volume),
-                fade_in: Some(source.fade_in),
-                fade_out: Some(source.fade_out),
-                opacity: Some(source.opacity),
-                preserve_pitch: Some(source.preserve_pitch),
-                muted: source.muted,
-                flip_h: Some(source.flip_h),
-                flip_v: Some(source.flip_v),
-                blend: Some(source.blend.clone()),
-                crop: Some(source.crop),
-                filters: Some(source.filters.clone()),
-                video_effects: Some(source.video_effects.clone()),
-                ..ClipPatch::default()
-            },
-        });
-        self.apply_in(gesture, Command::Batch { commands });
         Some(created)
     }
 
@@ -7386,142 +7494,161 @@ impl Studio {
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
         log::info!("project: opening {}", info.path);
         if self
-            .host
-            .open_projects
-            .claim(&info.path, concat_api::Holder::Window)
-            .is_err()
+            .session
+            .as_ref()
+            .is_some_and(|session| same_folder(session.path(), &info.path))
         {
-            return Err(t("studio.projectOpenThroughRemote"));
+            return Ok(());
         }
-        match Session::open_info(&info) {
-            Ok(session) => {
-                if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
-                    log::warn!("{error}");
-                }
-                self.pause();
-                // The proxies of media no longer in the project, or read
-                // as a range they no longer are, go now: nothing else
-                // sweeps cache/proxy.
-                let project_dir = std::path::Path::new(session.path());
-                let kept: HashSet<std::path::PathBuf> = session
-                    .project()
-                    .media
-                    .iter()
-                    .filter_map(|item| {
-                        concat_host::proxy::path_for(
-                            project_dir,
-                            &item.path,
-                            item.color_range.map(concat_export::engine_range),
-                            item.color_space.is_hdr(),
-                        )
-                    })
-                    .collect();
-                let swept = concat_host::proxy::sweep(project_dir, &kept);
-                if swept > 0 {
-                    log::info!("{swept} stale proxies swept from {}", project_dir.display());
-                }
-                self.session = Some(session);
-                crate::host::next_project_epoch();
-                self.forget_art();
-                self.art_failed.clear();
-                self.art_stamp = None;
-                self.proxied.clear();
-                self.echo = None;
-                self.dirty = false;
-                self.project_name = info.name.clone();
-                self.export.name = projects::folder_name(&info.name);
-                self.selection.clear();
-                self.transition_selected = None;
-                self.media.selected.clear();
-                self.playhead = 0.0;
-                self.handle(crate::panes::Msg::Timeline(
-                    crate::panes::timeline::TimelineMsg::Reset,
-                ));
-                self.on_start = false;
-                self.handle(crate::panes::Msg::Monitor(
-                    crate::panes::monitor::MonitorMsg::Opened,
-                ));
-                self.recents = projects::list(&self.host.dirs.config);
-                self.host.monitor.clear();
-                self.audition = None;
-                self.revision += 1;
-                self.flat = None;
-                self.sync_audio();
-                self.request_media_art();
-                self.request_preview();
-                self.ensure_cutouts();
-                self.ensure_regions();
-
-                // Effects this build no longer has, named once as the project
-                // opens: their links stay in the clips, marked not installed.
-                let retired = self
-                    .session
-                    .as_ref()
-                    .map(|session| retired_effects(session.project()))
-                    .unwrap_or_default();
-                if !retired.is_empty() {
-                    self.notify(&tf("studio.retiredEffects", &[&retired.join(", ")]), false);
-                }
-                // Effects that open as the ones standing in for them: the
-                // document changes when it is next saved, so say so.
-                let upgraded = self
-                    .session
-                    .as_ref()
-                    .map(|session| upgraded_effects(session.upgraded()))
-                    .unwrap_or_default();
-                if !upgraded.is_empty() {
-                    self.notify(
-                        &tf("studio.upgradedEffects", &[&upgraded.join(", ")]),
-                        false,
-                    );
-                }
-                // Clips that played backwards or moved by a preset in an
-                // earlier version, which this one does not read: named,
-                // with the way back where there is one.
-                let retired = self
-                    .session
-                    .as_ref()
-                    .map(|session| session.retired().clone())
-                    .unwrap_or_default();
-                if !retired.reversed.is_empty() {
-                    self.notify(
-                        &tf("studio.clipsNowForwards", &[&few(&retired.reversed)]),
-                        false,
-                    );
-                }
-                if !retired.animated.is_empty() {
-                    self.notify(
-                        &tf("studio.clipsLostAnimations", &[&few(&retired.animated)]),
-                        false,
-                    );
-                }
-
-                // Log missing media to file for debugging
-                if let Some(session) = &self.session {
-                    let missing = session.project().missing_media();
-                    if !missing.is_empty() {
-                        let log_path = std::path::Path::new(&info.path)
-                            .join("cache")
-                            .join("missing_media.log");
-                        if let Ok(mut file) = std::fs::File::create(&log_path) {
-                            use std::io::Write;
-                            let _ = writeln!(file, "{} media files missing:", missing.len());
-                            for m in &missing {
-                                let _ = writeln!(file, "  - {} ({})", m.name, m.path);
-                            }
-                        }
-
-                        self.handle(crate::panes::Msg::Relink(
-                            crate::panes::relink::RelinkMsg::Show(missing),
-                        ));
-                    }
-                }
+        let open_projects = self.host.open_projects.clone();
+        let has_current = self.session.is_some();
+        let mut opened_session = None;
+        match open_projects.claim_then(&info.path, concat_api::Holder::Window, || {
+            // Parse and validate the destination while the current session
+            // is still intact; a corrupt target must not strand the user.
+            opened_session = Some(Session::open_info(&info)?);
+            if has_current {
+                self.save_and_release().map_err(|error| {
+                    self.notify(&tf("studio.couldNotSave", &[&error]), true);
+                    error
+                })
+            } else {
                 Ok(())
             }
-            Err(error) => {
-                self.host.open_projects.release(&info.path);
-                Err(error)
+        }) {
+            Ok(()) => {}
+            Err(concat_api::ClaimThenError::HeldBy(_)) => {
+                return Err(t("studio.projectOpenThroughRemote"));
             }
+            Err(concat_api::ClaimThenError::Preparation(error)) => return Err(error),
+        }
+        let Some(session) = opened_session else {
+            self.host.open_projects.release(&info.path);
+            return Err("Destination session was not prepared".to_owned());
+        };
+        {
+            if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
+                log::warn!("{error}");
+            }
+            self.pause();
+            // The proxies of media no longer in the project, or read
+            // as a range they no longer are, go now: nothing else
+            // sweeps cache/proxy.
+            let project_dir = std::path::Path::new(session.path());
+            let kept: HashSet<std::path::PathBuf> = session
+                .project()
+                .media
+                .iter()
+                .filter_map(|item| {
+                    concat_host::proxy::path_for(
+                        project_dir,
+                        &item.path,
+                        item.color_range.map(concat_export::engine_range),
+                        item.color_space.is_hdr(),
+                    )
+                })
+                .collect();
+            let swept = concat_host::proxy::sweep(project_dir, &kept);
+            if swept > 0 {
+                log::info!("{swept} stale proxies swept from {}", project_dir.display());
+            }
+            self.session = Some(session);
+            crate::host::next_project_epoch();
+            self.forget_art();
+            self.art_failed.clear();
+            self.art_stamp = None;
+            self.proxied.clear();
+            self.echo = None;
+            self.dirty = false;
+            self.project_name = info.name.clone();
+            self.export.name = projects::folder_name(&info.name);
+            self.selection.clear();
+            self.transition_selected = None;
+            self.media.selected.clear();
+            self.playhead = 0.0;
+            self.handle(crate::panes::Msg::Timeline(
+                crate::panes::timeline::TimelineMsg::Reset,
+            ));
+            self.on_start = false;
+            self.handle(crate::panes::Msg::Monitor(
+                crate::panes::monitor::MonitorMsg::Opened,
+            ));
+            self.recents = projects::list(&self.host.dirs.config);
+            self.host.monitor.clear();
+            self.audition = None;
+            self.revision += 1;
+            self.flat = None;
+            self.sync_audio();
+            self.request_media_art();
+            self.request_preview();
+            self.ensure_cutouts();
+            self.ensure_regions();
+
+            // Effects this build no longer has, named once as the project
+            // opens: their links stay in the clips, marked not installed.
+            let retired = self
+                .session
+                .as_ref()
+                .map(|session| retired_effects(session.project()))
+                .unwrap_or_default();
+            if !retired.is_empty() {
+                self.notify(&tf("studio.retiredEffects", &[&retired.join(", ")]), false);
+            }
+            // Effects that open as the ones standing in for them: the
+            // document changes when it is next saved, so say so.
+            let upgraded = self
+                .session
+                .as_ref()
+                .map(|session| upgraded_effects(session.upgraded()))
+                .unwrap_or_default();
+            if !upgraded.is_empty() {
+                self.notify(
+                    &tf("studio.upgradedEffects", &[&upgraded.join(", ")]),
+                    false,
+                );
+            }
+            // Clips that played backwards or moved by a preset in an
+            // earlier version, which this one does not read: named,
+            // with the way back where there is one.
+            let retired = self
+                .session
+                .as_ref()
+                .map(|session| session.retired().clone())
+                .unwrap_or_default();
+            if !retired.reversed.is_empty() {
+                self.notify(
+                    &tf("studio.clipsNowForwards", &[&few(&retired.reversed)]),
+                    false,
+                );
+            }
+            if !retired.animated.is_empty() {
+                self.notify(
+                    &tf("studio.clipsLostAnimations", &[&few(&retired.animated)]),
+                    false,
+                );
+            }
+
+            // Log missing media to file for debugging
+            if let Some(session) = &self.session {
+                let missing = session.project().missing_media();
+                if !missing.is_empty() {
+                    let log_path = std::path::Path::new(&info.path)
+                        .join("cache")
+                        .join("missing_media.log");
+                    if let Ok(mut file) = std::fs::File::create(&log_path) {
+                        use std::io::Write;
+                        let _ = writeln!(file, "{} media files missing:", missing.len());
+                        for m in &missing {
+                            let _ = writeln!(file, "  - {} ({})", m.name, m.path);
+                        }
+                    }
+
+                    self.handle(crate::panes::Msg::Relink(
+                        crate::panes::relink::RelinkMsg::Show(missing),
+                    ));
+                }
+            }
+            Ok(())
         }
     }
 
@@ -7543,11 +7670,29 @@ impl Studio {
     }
 
     /// Saves, then closes the session and returns to the launch screen.
-    pub fn close_project(&mut self) {
+    pub fn close_project(&mut self) -> Result<(), String> {
+        match self.save_and_release() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.notify(&tf("studio.couldNotSave", &[&error]), true);
+                Err(error)
+            }
+        }
+    }
+
+    /// Writes the final snapshot before cancelling work, stopping autosave,
+    /// releasing the folder lock, or forgetting the session. On failure the
+    /// project stays open and can be saved or closed again.
+    fn save_and_release(&mut self) -> Result<(), String> {
         log::info!("project: closing {}", self.project_name);
-        // Words still being typed land in the save, not on the floor.
         self.flush_commit();
         self.pause();
+        if let Some(session) = self.session.as_mut() {
+            let (path, document) = session.prepare_save(None);
+            let ticket = projects::ticket();
+            projects::save_ordered(&path, &document, ticket)?;
+        }
+
         self.host.cutouts.cancel();
         self.host.enhancers.cancel();
         self.host.reversers.cancel();
@@ -7555,13 +7700,6 @@ impl Studio {
         self.reverse_jobs.clear();
         self.cutout_jobs.clear();
         self.region_job = None;
-        if let Some(session) = self.session.as_mut() {
-            let (path, document) = session.prepare_save(None);
-            if let Err(error) = projects::save(&path, &document) {
-                self.notify(&tf("studio.couldNotSave", &[&error]), true);
-                return;
-            }
-        }
         self.autosave.stop();
         if let Some(session) = self.session.as_ref() {
             self.host.open_projects.release(session.path());
@@ -7600,6 +7738,7 @@ impl Studio {
             .set_clips(std::path::PathBuf::new(), Vec::new());
         self.on_start = true;
         self.recents = projects::list(&self.host.dirs.config);
+        Ok(())
     }
 
     /// Posters for the recents that have none yet, decoded on a worker.
@@ -7948,6 +8087,15 @@ impl Studio {
     }
 
     // ── notices ──
+
+    /// Whether an editor sheet or confirmation currently covers its work area.
+    pub fn sheet_open(&self) -> bool {
+        self.export.open
+            || self.settings.open
+            || self.project_sheet.open
+            || self.relink.open
+            || self.confirm.is_some()
+    }
 
     /// Raises the bottom-right notice. Every caller is some other handler
     /// that has just done - or refused to do - the thing it is reporting, so
@@ -11078,6 +11226,7 @@ mod tests {
         let held = |row: usize, start: f64| super::Held {
             row,
             clip: Clip::blank("c", "t", ClipKind::Video, "c", start, 1.0),
+            media: Vec::new(),
         };
         let group = [held(1, 4.0), held(2, 5.5), held(0, 9.0)];
         let none = |_: usize| false;
@@ -11110,6 +11259,69 @@ mod tests {
             super::paste_plan(&group, 0.0, 0, 2, &|_| true)
                 .iter()
                 .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn a_partial_paste_plan_is_rejected_before_any_clip_is_placed() {
+        use concat_project::model::{Clip, ClipKind};
+        let held = |row: usize| super::Held {
+            row,
+            clip: Clip::blank(
+                format!("c{row}"),
+                "t",
+                ClipKind::Video,
+                "m",
+                row as f64,
+                1.0,
+            ),
+            media: Vec::new(),
+        };
+        let plan = super::paste_plan(&[held(0), held(usize::MAX)], 0.0, 0, 1, &|_| false);
+        assert_eq!(plan, vec![Some((0, 0.0)), None]);
+        assert_eq!(super::complete_paste_plan(plan), None);
+        assert_eq!(
+            super::complete_paste_plan(vec![Some((0, 0.0))]),
+            Some(vec![(0, 0.0)])
+        );
+    }
+
+    #[test]
+    fn a_same_path_clipboard_record_must_match_the_target_media_kind() {
+        use concat_project::model::{MediaItem, MediaKind, Project};
+        let source = MediaItem {
+            id: "source".to_owned(),
+            path: "C:/clips/same.mp4".to_owned(),
+            kind: MediaKind::Video,
+            ..MediaItem::default()
+        };
+        let same_kind = Project {
+            media: vec![MediaItem {
+                id: "local".to_owned(),
+                ..source.clone()
+            }],
+            ..Project::default()
+        };
+        assert_eq!(
+            super::held_media_resolution(&same_kind, &source),
+            super::HeldMediaResolution::Existing("local".to_owned())
+        );
+
+        let wrong_kind = Project {
+            media: vec![MediaItem {
+                id: "local".to_owned(),
+                kind: MediaKind::Audio,
+                ..source.clone()
+            }],
+            ..Project::default()
+        };
+        assert_eq!(
+            super::held_media_resolution(&wrong_kind, &source),
+            super::HeldMediaResolution::Incompatible
+        );
+        assert_eq!(
+            super::held_media_resolution(&Project::default(), &source),
+            super::HeldMediaResolution::Missing
         );
     }
 

@@ -356,7 +356,11 @@ pub(super) fn apply(
             }
             // The copy's bin entry, or the one already there for its path:
             // two clips of one file enhanced in turn share one copy.
-            let media_id = match project.media.iter().find(|media| media.path == item.path) {
+            let media_id = match project
+                .media
+                .iter()
+                .find(|media| same_media_path(&media.path, &item.path))
+            {
                 Some(existing) => existing.id.clone(),
                 None => {
                     let id = mint.next("m");
@@ -480,7 +484,11 @@ pub(super) fn apply(
                 let Some(item) = still else {
                     return Ok(Outcome::default());
                 };
-                if let Some(existing) = project.media.iter().find(|media| media.path == item.path) {
+                if let Some(existing) = project
+                    .media
+                    .iter()
+                    .find(|media| same_media_path(&media.path, &item.path))
+                {
                     existing.id.clone()
                 } else {
                     let id = mint.next("m");

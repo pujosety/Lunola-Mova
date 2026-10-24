@@ -16,6 +16,7 @@ use crate::model::{
     AppliedFilter, AudioTrack, Clip, ClipKind, ColorRange, ColorSpace, Crop, CustomFont, Cutout,
     CutoutMode, Enhanced, KeyEase, KeyProperty, MediaItem, MediaKind, MediaOrigin, Project,
     ShapeStyle, SpeedPoint, Stroke, TextStyle, Timeline, Track, Transition, VideoSettings,
+    same_media_path,
 };
 
 mod audio;
@@ -237,6 +238,13 @@ pub enum Command {
     AddMedia {
         /// The probed file, as described by the host.
         item: NewMedia,
+    },
+    /// Adds a media-bin record from an internal clipboard, minting a new
+    /// project-local id. The referenced file itself is never copied.
+    #[serde(skip)]
+    CopyMediaRecord {
+        /// The source project's complete metadata record.
+        item: Box<MediaItem>,
     },
     /// Removes a bin item and every clip referencing it, on *all* timelines
     /// - a clip whose media is gone would linger as a dead reference.
@@ -619,6 +627,16 @@ pub enum Command {
         /// Which properties change, and to what.
         patch: ClipPatch,
     },
+    /// Gives a placed clip another clip's editable properties while keeping
+    /// its own id, media, kind, timing, speed and neighbour-specific links.
+    /// Internal to the editor; it cannot cross the serialized command API.
+    #[serde(skip)]
+    MatchClip {
+        /// The clip that takes the properties.
+        clip_id: String,
+        /// The clip whose properties it takes.
+        like: Box<Clip>,
+    },
     /// Changes playback rate while holding the amount of source covered
     /// constant - the clip's timeline duration is what stretches, which is
     /// what makes this a speed change rather than a trim.
@@ -942,6 +960,7 @@ impl Command {
             Command::AddMedia { item } | Command::FillSlot { item, .. } => {
                 bad(item.duration) || bad(item.frame_rate)
             }
+            Command::CopyMediaRecord { item } => bad(item.duration) || bad(item.frame_rate),
             Command::AddClip { start, .. } | Command::AddClipAtFirstFree { start, .. } => {
                 bad([*start])
             }
@@ -1106,6 +1125,7 @@ pub fn apply(
             av::apply(project, mint, command)
         }
         command @ (Command::AddMedia { .. }
+        | Command::CopyMediaRecord { .. }
         | Command::SetMediaPlaceholder { .. }
         | Command::FillSlot { .. }
         | Command::RemoveMedia { .. }
@@ -1127,6 +1147,7 @@ pub fn apply(
         | Command::MergeClips { .. }
         | Command::RemoveClips { .. }) => clips::apply(project, mint, command),
         command @ (Command::UpdateClip { .. }
+        | Command::MatchClip { .. }
         | Command::SetClipSpeed { .. }
         | Command::SetClipCutout { .. }
         | Command::AddCutoutStroke { .. }

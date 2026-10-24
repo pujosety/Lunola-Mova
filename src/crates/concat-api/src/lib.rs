@@ -88,6 +88,15 @@ pub enum Holder {
     Api,
 }
 
+/// Why claiming a destination project before a session transition failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClaimThenError {
+    /// Another owner already holds the destination; the transition was not run.
+    HeldBy(Holder),
+    /// Preparing the transition failed; the provisional destination claim was released.
+    Preparation(String),
+}
+
 impl std::fmt::Display for Holder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -120,6 +129,23 @@ impl OpenProjects {
                 Ok(())
             }
         }
+    }
+
+    /// Claims the destination before running a transition that releases the
+    /// current project. A busy destination leaves the current session alone;
+    /// if preparation fails, the provisional claim is released again.
+    pub fn claim_then(
+        &self,
+        path: &str,
+        holder: Holder,
+        prepare: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), ClaimThenError> {
+        self.claim(path, holder).map_err(ClaimThenError::HeldBy)?;
+        if let Err(error) = prepare() {
+            self.release(path);
+            return Err(ClaimThenError::Preparation(error));
+        }
+        Ok(())
     }
 
     /// Gives `path` back, whoever had it.
@@ -1026,6 +1052,44 @@ mod tests {
             Reply::View(view) => *view,
             _ => panic!("not a view"),
         }
+    }
+
+    #[test]
+    fn claim_then_rejects_a_busy_target_before_closing_the_current_project() {
+        let open = OpenProjects::default();
+        open.claim("current", Holder::Window)
+            .expect("current claim");
+        open.claim("target", Holder::Api).expect("target claim");
+        let mut close_called = false;
+
+        let result = open.claim_then("target", Holder::Window, || {
+            close_called = true;
+            Ok(())
+        });
+
+        assert_eq!(result, Err(ClaimThenError::HeldBy(Holder::Api)));
+        assert!(
+            !close_called,
+            "a busy target must be rejected before save/close"
+        );
+        assert_eq!(open.holder("current"), Some(Holder::Window));
+        assert_eq!(open.holder("target"), Some(Holder::Api));
+    }
+
+    #[test]
+    fn claim_then_releases_the_target_when_closing_the_current_project_fails() {
+        let open = OpenProjects::default();
+        open.claim("current", Holder::Window)
+            .expect("current claim");
+
+        let result = open.claim_then("target", Holder::Window, || Err("save failed".to_owned()));
+
+        assert_eq!(
+            result,
+            Err(ClaimThenError::Preparation("save failed".to_owned()))
+        );
+        assert_eq!(open.holder("current"), Some(Holder::Window));
+        assert_eq!(open.holder("target"), None);
     }
 
     fn still(path: &str) -> NewMedia {

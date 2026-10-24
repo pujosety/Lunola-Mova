@@ -11,7 +11,7 @@
 //!
 //! Serde names are camelCase: that is the document's spelling.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -117,6 +117,26 @@ pub enum ColorRange {
     Full,
 }
 
+/// Whether two media paths identify the same imported file for duplicate
+/// detection. Windows paths fold ASCII case and slash direction without a
+/// filesystem lookup; other platforms require exact string equality.
+pub fn same_media_path(left: &str, right: &str) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    if !cfg!(windows) {
+        return left == right;
+    }
+    left.len() == right.len()
+        && left.bytes().zip(right.bytes()).all(|(left, right)| {
+            let fold = |byte: u8| match byte {
+                b'\\' => b'/',
+                other => other.to_ascii_lowercase(),
+            };
+            fold(left) == fold(right)
+        })
+}
+
 /// One entry in the media bin: a file the user imported, plus what the host's
 /// probe learned about it. The probe metadata is stored, not re-derived, so a
 /// document opens meaningfully even when the file itself is missing.
@@ -126,8 +146,8 @@ pub struct MediaItem {
     /// Minted by the editor ("m1", "m2", ...) and never re-issued, even
     /// across a save/load - clips reference media by this id.
     pub id: String,
-    /// Absolute path on the user's disk. Doubles as the duplicate check:
-    /// adding the same path twice is a no-op.
+    /// Absolute path on the user's disk. Compared with [`same_media_path`]
+    /// when deciding whether an import is already in the bin.
     pub path: String,
     /// Display name in the bin, normally the file's basename.
     pub name: String,
@@ -1500,6 +1520,40 @@ impl Clip {
             text: None,
             shape: None,
             extra: Map::new(),
+        }
+    }
+
+    /// The non-empty media ids this clip needs, including both sides of an
+    /// Enhance link. Kept unique so each bin record is copied at most once.
+    pub fn media_ids(&self) -> Vec<&str> {
+        fn push<'a>(ids: &mut Vec<&'a str>, id: &'a str) {
+            if !id.is_empty() && !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+
+        let mut ids = Vec::with_capacity(3);
+        push(&mut ids, &self.media_id);
+        if let Some(link) = &self.enhanced {
+            push(&mut ids, &link.original);
+            push(&mut ids, &link.copy);
+        }
+        ids
+    }
+
+    /// Rewrites this clip's media references with project-local ids, leaving
+    /// unknown ids alone so a missing source record stays visibly missing.
+    pub fn remap_media_ids(&mut self, mapping: &HashMap<String, String>) {
+        fn remap(id: &mut String, mapping: &HashMap<String, String>) {
+            if let Some(local) = mapping.get(id.as_str()) {
+                *id = local.clone();
+            }
+        }
+
+        remap(&mut self.media_id, mapping);
+        if let Some(link) = &mut self.enhanced {
+            remap(&mut link.original, mapping);
+            remap(&mut link.copy, mapping);
         }
     }
 

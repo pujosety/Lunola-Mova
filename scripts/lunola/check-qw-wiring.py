@@ -35,5 +35,27 @@ class QWBindingContract(unittest.TestCase):
             self.assertIn(surface, sheet.group(1), f'{surface} must restore the window shortcut scope on close')
         self.assertRegex(app, r'changed sheet-open => \{\s*if \(!root\.sheet-open\) \{\s*keys\.focus\(\);')
 
+    def test_all_editor_chords_avoid_text_inputs_and_rust_sheets(self):
+        lib = (ROOT / 'src/crates/concat/src/lib.rs').read_text(encoding='utf-8')
+        studio = (ROOT / 'src/crates/concat/src/studio.rs').read_text(encoding='utf-8')
+        guard = re.search(
+            r'action\s*!=\s*"save"\s*&&\s*\(typing\(&app\)\s*\|\|\s*shell\.studio\.borrow\(\)\.sheet_open\(\)\)',
+            lib,
+        )
+        self.assertIsNotNone(
+            guard,
+            'editor chords other than Save must not escape text fields or cover a sheet',
+        )
+        self.assertIn('fn typing(app: &App) -> bool', lib)
+        self.assertIn('WindowInner::from_pub(app.window())', lib)
+        self.assertIsNotNone(
+            re.search(
+                r'pub fn sheet_open\(&self\) -> bool\s*\{.*?self\.export\.open.*?self\.settings\.open.*?self\.project_sheet\.open.*?self\.relink\.open.*?self\.confirm\.is_some\(\)',
+                studio,
+                re.S,
+            ),
+            'sheet_open must include every blocking surface',
+        )
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

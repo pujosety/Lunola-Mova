@@ -257,6 +257,20 @@ impl Session {
         self.editor.end_gesture();
     }
 
+    /// Undoes the current gesture when it left the project different from
+    /// `before`. Callers use this to roll back a multi-command operation
+    /// that failed after one or more of its commands had already succeeded.
+    /// The caller must end the gesture before its first mutation so this
+    /// undo cannot absorb an earlier edit.
+    pub fn rollback_gesture_if_project_changed(&mut self, before: &Project) -> bool {
+        self.end_gesture();
+        if self.project() == before {
+            return false;
+        }
+        self.undo();
+        true
+    }
+
     /// Steps the history back one edit.
     pub fn undo(&mut self) -> EditorView {
         self.editor.undo();
@@ -319,6 +333,41 @@ mod tests {
             rate_num: 30,
             rate_den: 1,
         }
+    }
+
+    #[test]
+    fn a_failed_paste_gesture_undoes_media_records_already_added() {
+        use concat_project::model::{MediaItem, MediaKind};
+
+        let scratch =
+            std::env::temp_dir().join(format!("concat-paste-rollback-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        let info = projects::create(&scratch.to_string_lossy(), "Paste", 1920, 1080, 30, 1)
+            .expect("creates");
+        let mut session = Session::open_info(&info).expect("opens");
+        let before = session.project().clone();
+        let view = session
+            .apply_within(
+                Some("paste"),
+                Command::CopyMediaRecord {
+                    item: Box::new(MediaItem {
+                        path: "C:/clips/frame.png".to_owned(),
+                        name: "frame.png".to_owned(),
+                        kind: MediaKind::Image,
+                        ..MediaItem::default()
+                    }),
+                },
+            )
+            .expect("copies media metadata");
+        assert!(view.created_id.is_some());
+        assert_eq!(session.project().media.len(), 1);
+
+        assert!(session.rollback_gesture_if_project_changed(&before));
+        assert_eq!(session.project(), &before);
+        assert!(!session.can_undo());
+
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 
     #[test]

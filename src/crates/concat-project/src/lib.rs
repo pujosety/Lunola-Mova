@@ -983,6 +983,154 @@ mod tests {
     }
 
     #[test]
+    fn match_clip_copies_properties_but_keeps_the_destination_place_and_media() {
+        let (mut editor, media_id, source_id) = fixture();
+        let track_id = editor.project().active().tracks[0].id.clone();
+        let mut like = editor
+            .project()
+            .active()
+            .clip(&source_id)
+            .expect("source clip")
+            .clone();
+        like.name = "Source copy".into();
+        like.media_id = "foreign-media".into();
+        like.track_id = "foreign-track".into();
+        like.kind = ClipKind::Image;
+        like.start = 99.0;
+        like.duration = 99.0;
+        like.source_start = 8.0;
+        like.speed = 2.0;
+        like.opacity = 0.4;
+        like.flip_h = true;
+        like.cutout = Some(
+            serde_json::from_value(json!({"mode":"auto", "edgeStrength":0.4})).expect("cutout"),
+        );
+        like.enhanced = Some(crate::model::Enhanced {
+            original: "original-media".into(),
+            copy: "enhanced-media".into(),
+            on: true,
+        });
+        like.extra.insert("futureField".into(), json!("kept"));
+        like.transition_in = Some(crate::model::Transition {
+            id: "cross-fade".into(),
+            duration: 1.0,
+        });
+        like.detached_from = Some("other-video".into());
+
+        let copy_id = editor
+            .apply(Command::AddClip {
+                media_id: media_id.clone(),
+                track_id,
+                start: 20.0,
+                ripple: false,
+            })
+            .expect("adds destination")
+            .created_id
+            .expect("destination id");
+        let destination = editor
+            .project()
+            .active()
+            .clip(&copy_id)
+            .expect("destination")
+            .clone();
+
+        let outcome = editor
+            .apply(Command::MatchClip {
+                clip_id: copy_id.clone(),
+                like: Box::new(like.clone()),
+            })
+            .expect("matches");
+        assert!(outcome.applied);
+
+        let copy = editor.project().active().clip(&copy_id).expect("copy");
+        assert_eq!(copy.opacity, like.opacity);
+        assert_eq!(copy.flip_h, like.flip_h);
+        assert_eq!(copy.cutout, like.cutout);
+        assert_eq!(copy.enhanced, like.enhanced);
+        assert_eq!(copy.extra, like.extra);
+        assert_eq!(copy.id, destination.id);
+        assert_eq!(copy.track_id, destination.track_id);
+        assert_eq!(copy.media_id, destination.media_id);
+        assert_eq!(copy.kind, destination.kind);
+        assert_eq!(copy.start, destination.start);
+        assert_eq!(copy.duration, destination.duration);
+        assert_eq!(copy.source_start, destination.source_start);
+        assert_eq!(copy.speed, destination.speed);
+        assert_eq!(copy.transition_in, destination.transition_in);
+        assert_eq!(copy.detached_from, destination.detached_from);
+    }
+
+    #[test]
+    fn clipboard_media_copy_remints_id_and_preserves_the_full_record() {
+        let (mut editor, _, _) = fixture();
+        let mut source = editor.project().media[0].clone();
+        source.id = "foreign-id".into();
+        source.path = "/copied-from-another-project.mp4".into();
+        source.placeholder = true;
+        source.extra.insert("futureField".into(), json!("kept"));
+        let mut expected = source.clone();
+
+        let outcome = editor
+            .apply(Command::CopyMediaRecord {
+                item: Box::new(source.clone()),
+            })
+            .expect("copies media record");
+        let new_id = outcome.created_id.expect("new project-local id");
+        assert_ne!(new_id, source.id);
+        expected.id = new_id.clone();
+        assert_eq!(editor.project().media.last(), Some(&expected));
+
+        let duplicate = editor
+            .apply(Command::CopyMediaRecord {
+                item: Box::new(source),
+            })
+            .expect("same file is a no-op");
+        assert!(!duplicate.applied);
+        assert_eq!(editor.project().media.len(), 2);
+    }
+
+    #[test]
+    fn clip_media_ids_include_enhancement_links_and_can_be_remapped() {
+        let mut clip = crate::model::Clip::blank("c", "t", ClipKind::Video, "v", 0.0, 1.0);
+        clip.media_id = "copy".into();
+        clip.enhanced = Some(crate::model::Enhanced {
+            original: "original".into(),
+            copy: "copy".into(),
+            on: false,
+        });
+        assert_eq!(clip.media_ids(), vec!["copy", "original"]);
+
+        let remap = std::collections::HashMap::from([
+            ("copy".to_owned(), "m3".to_owned()),
+            ("original".to_owned(), "m2".to_owned()),
+        ]);
+        clip.remap_media_ids(&remap);
+        assert_eq!(clip.media_id, "m3");
+        let link = clip.enhanced.expect("enhancement");
+        assert_eq!(link.original, "m2");
+        assert_eq!(link.copy, "m3");
+    }
+
+    #[test]
+    fn empty_paths_are_not_a_shared_media_identity() {
+        assert!(!crate::model::same_media_path("", ""));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_path_spelled_another_way_is_not_imported_twice_on_windows() {
+        let mut editor = Editor::new();
+        editor
+            .apply(media(r"C:\Videos\a.mp4", 10.0, true))
+            .expect("adds");
+        let duplicate = editor
+            .apply(media("c:/videos/A.mp4", 10.0, true))
+            .expect("same file is a no-op");
+        assert!(!duplicate.applied);
+        assert_eq!(editor.project().media.len(), 1);
+    }
+
+    #[test]
     fn replace_clip_media_can_move_the_in_point_to_the_copy() {
         let (mut editor, _, clip_id) = fixture();
         editor

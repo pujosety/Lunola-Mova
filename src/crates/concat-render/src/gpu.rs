@@ -752,6 +752,11 @@ impl WgpuCompositor {
     /// then every API wgpu was built with. `software_only` leaves the
     /// hardware adapters out.
     fn own_api_first(software_only: bool) -> Option<Self> {
+        // The window sets this before backend selection when sharing the
+        // adapter is unsafe. Keep the monitor on a separate software device.
+        let software_only = software_only
+            || std::env::var("CONCAT_GPU")
+                .is_ok_and(|value| value.trim().eq_ignore_ascii_case("software"));
         let own = if cfg!(target_vendor = "apple") {
             wgpu::Backends::METAL
         } else if cfg!(windows) {
@@ -768,10 +773,16 @@ impl WgpuCompositor {
     /// software - or software alone - or `None` when none of them opens a
     /// device.
     fn on_backends(backends: wgpu::Backends, software_only: bool) -> Option<Self> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let mut descriptor = wgpu::InstanceDescriptor {
             backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
+        };
+        // Default to FXC: without a bundled DXC, `Auto` can load a stray
+        // dxcompiler.dll from PATH that is incompatible with this wgpu build.
+        // Keep WGPU_DX12_COMPILER as an explicit override for diagnostics.
+        descriptor.backend_options.dx12.shader_compiler =
+            wgpu::Dx12Compiler::from_env().unwrap_or(wgpu::Dx12Compiler::Fxc);
+        let instance = wgpu::Instance::new(descriptor);
         let choices: &[bool] = if software_only {
             &[true]
         } else {

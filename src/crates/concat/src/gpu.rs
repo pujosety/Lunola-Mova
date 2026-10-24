@@ -55,12 +55,24 @@ impl Gpu {
         } else {
             wgpu::Backends::VULKAN
         };
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        let mut descriptor = wgpu::InstanceDescriptor {
             backends,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
+        };
+        // Default to FXC: without a bundled DXC, `Auto` can load a stray
+        // dxcompiler.dll from PATH that is incompatible with this wgpu build.
+        // Keep WGPU_DX12_COMPILER as an explicit override for diagnostics.
+        descriptor.backend_options.dx12.shader_compiler =
+            wgpu::Dx12Compiler::from_env().unwrap_or(wgpu::Dx12Compiler::Fxc);
+        let instance = wgpu::Instance::new(descriptor);
+        let software = std::env::var("CONCAT_GPU")
+            .is_ok_and(|value| value.trim().eq_ignore_ascii_case("software"));
+        if software {
+            log::warn!("CONCAT_GPU=software: requesting a software window adapter");
+        }
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: software,
             ..Default::default()
         }))
         .ok()?;

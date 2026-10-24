@@ -19,7 +19,7 @@ pub(super) fn apply(
             if project
                 .media
                 .iter()
-                .any(|existing| existing.path == item.path)
+                .any(|existing| same_media_path(&existing.path, &item.path))
             {
                 return Ok(Outcome::default());
             }
@@ -44,6 +44,24 @@ pub(super) fn apply(
                 color_space: item.color_space,
                 extra: Default::default(),
             });
+            Ok(Outcome {
+                created_id: Some(id),
+                applied: true,
+            })
+        }
+
+        Command::CopyMediaRecord { item } => {
+            if project
+                .media
+                .iter()
+                .any(|existing| same_media_path(&existing.path, &item.path))
+            {
+                return Ok(Outcome::default());
+            }
+            let id = mint.next("m");
+            let mut item = *item;
+            item.id = id.clone();
+            project.media.push(item);
             Ok(Outcome {
                 created_id: Some(id),
                 applied: true,
