@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+import { Theme } from "theme/theme.slint";
+
+// The supplied wordmark has dark lettering. Keep its original pixels and
+// proportions, and give it a light backing in BOTH themes instead of tinting
+// the image or making the dark-theme name disappear into the surface.
+export component BrandWordmark inherits Rectangle {
+    background: Theme.brand-paper;
+    border-radius: Theme.r;
+    clip: true;
+    height: 76px;
+
+    Image {
+        x: 12px;
+        y: 8px;
+        width: Math.max(0px, parent.width - 24px);
+        height: Math.max(0px, parent.height - 16px);
+        source: @image-url("../../../../assets/lunola/originals/wordmark.png");
+        image-fit: contain;
+        accessible-label: "Lunola Mova";
+    }
+}
+
+// Onboarding is part of the project browser, not a blocking splash or a new
+// route. It has no pointer handlers, timers, animations or network resources.
+export component StartHero inherits Rectangle {
+    property <bool> stacked: root.width < 600px;
+    property <length> art-h: root.stacked ? 142px : root.height;
+    property <length> art-w: root.stacked ? root.width : root.width * 0.55;
+    height: root.stacked ? 274px : 218px;
+    background: Theme.launch-panel;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.line;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.art-w;
+        height: root.art-h;
+        background: Theme.brand-art-ground;
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: @image-url("../../../../assets/lunola/originals/splash.png");
+            image-fit: contain;
+            // The artwork is decorative; the adjacent wordmark carries the
+            // identity and the tagline remains real accessible UI text.
+            accessible-role: none;
+        }
+    }
+
+    Rectangle {
+        x: root.stacked ? 0px : root.art-w;
+        y: root.stacked ? root.art-h : 0px;
+        width: root.stacked ? root.width : root.width - root.art-w;
+        height: root.stacked ? root.height - root.art-h : root.height;
+        VerticalLayout {
+            padding: root.stacked ? 14px : 20px;
+            spacing: 12px;
+            alignment: center;
+            BrandWordmark {
+                height: root.stacked ? 60px : 76px;
+            }
+            Text {
+                text: "Make Every Frame Move.";
+                color: Theme.fg;
+                font-size: root.stacked ? Theme.fs-xl : 18px;
+                font-weight: Theme.weight-title;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

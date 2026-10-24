@@ -1,0 +1,17 @@
+{
+  "wordmark.png": {
+    "sha256": "861758d0e7665f528da8f29a26c222409a27350bf7d1659b4ee4908261dfb811",
+    "bytes": 380535,
+    "original_file": "ChatGPT_Image_Oct_13_2026_09_09_14_PM-1_da1455.png"
+  },
+  "app-icon.png": {
+    "sha256": "6b249c230f71e65cf95322b3a4c9b167991b6306a34fb4661770c221b4db5fa4",
+    "bytes": 977356,
+    "original_file": "ChatGPT_Image_Oct_13_2026_09_09_16_PM-2_df476a.png"
+  },
+  "splash.png": {
+    "sha256": "ecff12b626d27d8c69169cadb20b4191cc45410a6597c726ac0b2f67c9e60e73",
+    "bytes": 1830186,
+    "original_file": "ChatGPT_Image_Oct_13_2026_09_09_18_PM-3_8f5bd8.png"
+  }
+}

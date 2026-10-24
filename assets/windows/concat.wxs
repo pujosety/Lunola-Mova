@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lunola Mova x64 draft, derived from Concat installer sources.
+     WiX 6: wix build -arch x64 -d Version=0.2.7 -d Stage=<absolute-stage>
+     -o <output>/Lunola-Mova-0.2.7-windows-x64.msi assets/windows/concat.wxs
+     Compile only after verified staging and application smoke. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- One upgrade code for the life of the product, so a newer .msi
+       replaces an older one rather than sitting beside it. -->
+  <Package Name="Lunola Mova"
+           Manufacturer="Lunola"
+           Version="$(var.Version)"
+           UpgradeCode="4E2D579F-62EB-47F0-8A3E-0779D5D83534"
+           Scope="perMachine"
+           Language="1033">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Lunola Mova is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="LunolaMovaIcon.ico" SourceFile="$(var.Stage)\lunola-mova.ico" />
+    <Property Id="ARPPRODUCTICON" Value="LunolaMovaIcon.ico" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Lunola Mova" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ShortcutFolder" Name="Lunola Mova" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Lunola Mova" Level="1">
+      <ComponentGroupRef Id="Program" />
+      <ComponentRef Id="StartMenu" />
+    </Feature>
+
+    <!-- Every file in the staged folder, as it is there. -->
+    <ComponentGroup Id="Program" Directory="INSTALLFOLDER">
+      <Files Include="$(var.Stage)\**" />
+    </ComponentGroup>
+
+    <Component Id="StartMenu" Directory="ShortcutFolder" Guid="D04E9537-0956-401C-90EB-8FD30028D9CF">
+      <Shortcut Id="StartMenuShortcut"
+                Name="Lunola Mova"
+                Description="Video editor"
+                Target="[INSTALLFOLDER]lunola-mova.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="LunolaMovaIcon.ico" />
+      <RemoveFolder Id="RemoveShortcutFolder" On="uninstall" />
+      <RegistryValue Root="HKLM" Key="Software\Lunola\Mova" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>
