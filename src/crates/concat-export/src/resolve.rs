@@ -80,7 +80,11 @@ impl CutoutJob {
                     &mut out,
                     &mask,
                     &self.mapping,
-                    [((rgb >> 16) & 0xff) as u8, ((rgb >> 8) & 0xff) as u8, (rgb & 0xff) as u8],
+                    [
+                        ((rgb >> 16) & 0xff) as u8,
+                        ((rgb >> 8) & 0xff) as u8,
+                        (rgb & 0xff) as u8,
+                    ],
                 );
             }
             _ => concat_vision::cut(&mut out, &mask, &self.mapping),
@@ -107,10 +111,8 @@ mod background_mode_tests {
     use concat_vision::{Mask, MaskStore};
 
     fn fixture(mode: u8) -> (CutoutJob, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "mova-resolve-bg-{}-{mode}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("mova-resolve-bg-{}-{mode}", std::process::id()));
         let mut store = MaskStore::open(&dir);
         store.clear();
         let mask = Mask::from_bytes(2, 1, vec![255, 0]).unwrap();
@@ -174,10 +176,16 @@ mod background_mode_tests {
         let subject = rendered.pixel(0, 0).unwrap();
         let revealed = rendered.pixel(3, 0).unwrap();
         for (actual, expected) in subject.iter().zip([200u8, 0, 0, 255]) {
-            assert!(actual.abs_diff(expected) <= 3, "subject changed: {subject:?}");
+            assert!(
+                actual.abs_diff(expected) <= 3,
+                "subject changed: {subject:?}"
+            );
         }
         for (actual, expected) in revealed.iter().zip([0u8, 200, 0, 255]) {
-            assert!(actual.abs_diff(expected) <= 3, "lower layer not revealed: {revealed:?}");
+            assert!(
+                actual.abs_diff(expected) <= 3,
+                "lower layer not revealed: {revealed:?}"
+            );
         }
         assert!(!compositor.is_dead());
         let _ = std::fs::remove_dir_all(dir);
@@ -197,7 +205,10 @@ mod background_mode_tests {
         let (job, dir) = fixture(1);
         let out = job.cut(&frame(), concat_core::Rational::ZERO).unwrap();
         let edge = out.pixel(3, 0).unwrap();
-        assert!(edge[0] > 0 || edge[2] < 200, "background edge was not blurred: {edge:?}");
+        assert!(
+            edge[0] > 0 || edge[2] < 200,
+            "background edge was not blurred: {edge:?}"
+        );
         assert_eq!(edge[3], 255);
         assert_eq!(out.pixel(0, 0).unwrap(), [200, 0, 0, 255]);
         let _ = std::fs::remove_dir_all(dir);

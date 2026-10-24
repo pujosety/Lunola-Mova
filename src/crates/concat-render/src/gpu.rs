@@ -1095,7 +1095,11 @@ impl WgpuCompositor {
                     },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
-                        entry_point: Some(if index == Blend::ALL.len() { "fs_alpha_main" } else { "fs_main" }),
+                        entry_point: Some(if index == Blend::ALL.len() {
+                            "fs_alpha_main"
+                        } else {
+                            "fs_main"
+                        }),
                         compilation_options: Default::default(),
                         targets: &[Some(wgpu::ColorTargetState {
                             format: work,
@@ -1353,7 +1357,11 @@ impl WgpuCompositor {
     /// Additive SDR alpha proof API. Returns straight RGBA, not movie output.
     pub fn render_transparent(&mut self, plan: &FramePlan) -> Result<Frame, String> {
         let frame = self.render_plan(plan, true);
-        if self.dead { Err("alpha compositor device failed".to_owned()) } else { Ok(frame) }
+        if self.dead {
+            Err("alpha compositor device failed".to_owned())
+        } else {
+            Ok(frame)
+        }
     }
 
     /// Whether the device has been lost. A dead compositor answers
@@ -1978,7 +1986,14 @@ impl WgpuCompositor {
         self.encode_alpha(view, target, draws, clear, false)
     }
 
-    fn encode_alpha(&self, view: &wgpu::TextureView, target: &wgpu::Texture, draws: &[Draw], clear: wgpu::Color, preserve_alpha: bool) -> wgpu::CommandEncoder {
+    fn encode_alpha(
+        &self,
+        view: &wgpu::TextureView,
+        target: &wgpu::Texture,
+        draws: &[Draw],
+        clear: wgpu::Color,
+        preserve_alpha: bool,
+    ) -> wgpu::CommandEncoder {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -2004,7 +2019,14 @@ impl WgpuCompositor {
                     depth_or_array_layers: 1,
                 },
             );
-            self.draw_segment(&mut encoder, view, size, load, &[(index, draw)], preserve_alpha);
+            self.draw_segment(
+                &mut encoder,
+                view,
+                size,
+                load,
+                &[(index, draw)],
+                preserve_alpha,
+            );
         }
         if !pending.is_empty() || matches!(load, wgpu::LoadOp::Clear(_)) {
             self.draw_segment(&mut encoder, view, size, load, &pending, preserve_alpha);
@@ -2052,7 +2074,13 @@ impl WgpuCompositor {
                         .iter()
                         .position(|mode| *mode == draw.blend)
                         .unwrap_or(0);
-                    pass.set_pipeline(&self.pipelines[if preserve_alpha { Blend::ALL.len() } else { which }]);
+                    pass.set_pipeline(
+                        &self.pipelines[if preserve_alpha {
+                            Blend::ALL.len()
+                        } else {
+                            which
+                        }],
+                    );
                 }
             }
             pass.set_bind_group(0, &self.pool[&draw.size][draw.texture].bind_group, &[]);
@@ -3513,7 +3541,6 @@ impl WgpuCompositor {
             }
         }
     }
-
 }
 
 impl Compositor for WgpuCompositor {
@@ -3608,18 +3635,33 @@ impl WgpuCompositor {
     /// Draws into the readback target and copies it out: one submit, one
     /// wait. `None` when the device did not deliver the pixels.
 
-
-    fn render_and_read_alpha(&mut self, width: u32, height: u32, draws: &[Draw], preserve_alpha: bool) -> Option<Frame> {
+    fn render_and_read_alpha(
+        &mut self,
+        width: u32,
+        height: u32,
+        draws: &[Draw],
+        preserve_alpha: bool,
+    ) -> Option<Frame> {
         let (canvas, canvas_texture, canvas_view) = self.canvas(width, height);
         self.target(width, height);
         let target = self.current_target();
         let view = target
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let clear = if preserve_alpha { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
-        let mut encoder = self.encode_alpha(&canvas_view, &canvas_texture, draws, clear, preserve_alpha);
+        let clear = if preserve_alpha {
+            wgpu::Color::TRANSPARENT
+        } else {
+            wgpu::Color::BLACK
+        };
+        let mut encoder =
+            self.encode_alpha(&canvas_view, &canvas_texture, draws, clear, preserve_alpha);
         if preserve_alpha {
-            Self::copy(&mut encoder, &self.straight_pipeline, &self.pool[&(width, height)][canvas].bind_group, &view);
+            Self::copy(
+                &mut encoder,
+                &self.straight_pipeline,
+                &self.pool[&(width, height)][canvas].bind_group,
+                &view,
+            );
         } else {
             self.resolve(&mut encoder, (width, height), canvas, &view);
         }

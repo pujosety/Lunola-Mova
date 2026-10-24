@@ -5,7 +5,7 @@
 //! Does not copy, alter, upload, or write beside source media.
 use concat_host::cutout::{AnalyseRequest, Cutouts, Progress};
 use concat_project::model::Subject;
-use concat_vision::{mask_dir, models::ModelId, MaskStore, MASK_RATE};
+use concat_vision::{MASK_RATE, MaskStore, mask_dir, models::ModelId};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -30,7 +30,10 @@ struct Manifest {
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 4 {
-        return Err("usage: lunola-cutout-folder-qa <data-dir> <isolated-project-dir> <manifest.json>".into());
+        return Err(
+            "usage: lunola-cutout-folder-qa <data-dir> <isolated-project-dir> <manifest.json>"
+                .into(),
+        );
     }
     let data_dir = Path::new(&args[1]);
     let project_dir = PathBuf::from(&args[2]);
@@ -44,9 +47,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::create_dir_all(&project_dir)?;
     let cutouts = Cutouts::new(data_dir);
     if !cutouts.installed(ModelId::Person) {
-        return Err("pinned RVM model is not installed; network fetch is prohibited in this QA run".into());
+        return Err(
+            "pinned RVM model is not installed; network fetch is prohibited in this QA run".into(),
+        );
     }
-    println!("{{\"event\":\"run_start\",\"clips\":{},\"model\":\"rvm-mobilenetv3\",\"sha256\":\"{}\",\"mask_rate\":{}}}", manifest.clips.len(), model_hash, MASK_RATE);
+    println!(
+        "{{\"event\":\"run_start\",\"clips\":{},\"model\":\"rvm-mobilenetv3\",\"sha256\":\"{}\",\"mask_rate\":{}}}",
+        manifest.clips.len(),
+        model_hash,
+        MASK_RATE
+    );
     let mut total_written = 0usize;
     let mut total_frames = 0usize;
     let mut total_blank = 0usize;
@@ -77,7 +87,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let store = MaskStore::open(&mask_dir(&project_dir, &clip.path, Subject::Person));
         let stored_model = store.model().unwrap_or("unknown");
         if stored_model != ModelId::Person.name() {
-            return Err(format!("clip index {index} used unexpected model {stored_model:?}").into());
+            return Err(
+                format!("clip index {index} used unexpected model {stored_model:?}").into(),
+            );
         }
         let expected = (clip.duration * f64::from(MASK_RATE)).ceil() as usize;
         let mut sampled = 0usize;
@@ -97,12 +109,37 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-        let coverage = if pixels == 0 { 0.0 } else { foreground_pixels as f64 / pixels as f64 };
+        let coverage = if pixels == 0 {
+            0.0
+        } else {
+            foreground_pixels as f64 / pixels as f64
+        };
         total_written += written;
         total_frames += sampled;
         total_blank += blank;
-        println!("{{\"event\":\"clip_done\",\"index\":{},\"source_resolution\":[{},{}],\"duration_s\":{},\"outstanding_before\":{},\"frames_written\":{},\"frames_read_back\":{},\"blank_masks\":{},\"mean_binary_foreground_coverage\":{},\"elapsed_s\":{},\"model\":\"{}\"}}", index + 1, clip.width, clip.height, clip.duration, outstanding_before, written, sampled, blank, coverage, elapsed, stored_model);
+        println!(
+            "{{\"event\":\"clip_done\",\"index\":{},\"source_resolution\":[{},{}],\"duration_s\":{},\"outstanding_before\":{},\"frames_written\":{},\"frames_read_back\":{},\"blank_masks\":{},\"mean_binary_foreground_coverage\":{},\"elapsed_s\":{},\"model\":\"{}\"}}",
+            index + 1,
+            clip.width,
+            clip.height,
+            clip.duration,
+            outstanding_before,
+            written,
+            sampled,
+            blank,
+            coverage,
+            elapsed,
+            stored_model
+        );
     }
-    println!("{{\"event\":\"run_done\",\"clips\":{},\"frames_written\":{},\"frames_read_back\":{},\"blank_masks\":{},\"elapsed_s\":{},\"inference_pipeline_fps_including_decode\":{}}}", manifest.clips.len(), total_written, total_frames, total_blank, overall.elapsed().as_secs_f64(), total_frames as f64 / overall.elapsed().as_secs_f64());
+    println!(
+        "{{\"event\":\"run_done\",\"clips\":{},\"frames_written\":{},\"frames_read_back\":{},\"blank_masks\":{},\"elapsed_s\":{},\"inference_pipeline_fps_including_decode\":{}}}",
+        manifest.clips.len(),
+        total_written,
+        total_frames,
+        total_blank,
+        overall.elapsed().as_secs_f64(),
+        total_frames as f64 / overall.elapsed().as_secs_f64()
+    );
     Ok(())
 }

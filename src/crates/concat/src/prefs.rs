@@ -186,11 +186,9 @@ impl Preferences {
         let path = dirs.config.join(FILE);
         let staging = loop {
             let suffix = SAVE_SUFFIX.fetch_add(1, Ordering::Relaxed);
-            let staging = dirs.config.join(format!(
-                "{FILE}.{}.{}.part",
-                std::process::id(),
-                suffix
-            ));
+            let staging =
+                dirs.config
+                    .join(format!("{FILE}.{}.{}.part", std::process::id(), suffix));
             match write_private(&staging, &encoded) {
                 Ok(()) => break staging,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -397,7 +395,10 @@ mod tests {
 
         let prefs = Preferences::load(&dirs);
         assert!(prefs.magnetic, "a malformed dark value must not erase this");
-        assert_eq!(prefs.dark, None, "only the malformed field returns to default");
+        assert_eq!(
+            prefs.dark, None,
+            "only the malformed field returns to default"
+        );
         assert_eq!(prefs.locale.as_deref(), Some("id"));
         assert_eq!(
             std::fs::read(dirs.config.join("settings.json.unreadable")).expect("quarantine"),

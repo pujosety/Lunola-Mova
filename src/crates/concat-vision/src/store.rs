@@ -118,7 +118,11 @@ impl MaskStore {
     /// Process-local publication identity. MaskStore writers also advance ancestors
     /// so smart-region replacement invalidates its parent resolved mask and plan.
     pub fn generation(dir: &Path) -> u64 {
-        *generations().lock().unwrap_or_else(|p| p.into_inner()).get(dir).unwrap_or(&0)
+        *generations()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(dir)
+            .unwrap_or(&0)
     }
 
     /// Where the store is.
@@ -243,12 +247,15 @@ impl MaskStore {
         };
         let radius = cutout.feather as f32 * painted.width() as f32;
         let refined = if cutout.expansion != 0 || cutout.edge_strength > 0.0 {
-            crate::refine_mask(&painted, crate::SpatialRefinement {
-                expansion: cutout.expansion,
-                edge_strength: cutout.edge_strength as f32,
-                edge_radius: cutout.edge_radius,
-                feather: radius,
-            })
+            crate::refine_mask(
+                &painted,
+                crate::SpatialRefinement {
+                    expansion: cutout.expansion,
+                    edge_strength: cutout.edge_strength as f32,
+                    edge_radius: cutout.edge_radius,
+                    feather: radius,
+                },
+            )
         } else {
             painted.blurred(radius)
         };
@@ -427,11 +434,7 @@ fn resolved_cache() -> &'static Mutex<Recent<ResolvedKey, Arc<Mask>>> {
 /// The mask in `file`, from memory when it has been read before.
 fn load(file: &Path) -> Option<Arc<Mask>> {
     let key = (file.to_path_buf(), MaskStore::generation(file.parent()?));
-    if let Some(hit) = mask_cache()
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(&key))
-    {
+    if let Some(hit) = mask_cache().lock().ok().and_then(|cache| cache.get(&key)) {
         return Some(hit);
     }
     let bytes = std::fs::read(file).ok()?;

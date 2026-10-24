@@ -551,10 +551,18 @@ pub const MIN_BRUSH: f64 = 0.005;
 /// See [`MIN_BRUSH`].
 pub const MAX_BRUSH: f64 = 0.5;
 
-fn is_zero_i32(value: &i32) -> bool { *value == 0 }
-fn is_zero_u32(value: &u32) -> bool { *value == 0 }
-fn is_zero_u8(value: &u8) -> bool { *value == 0 }
-fn is_zero_f64(value: &f64) -> bool { *value == 0.0 }
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
 
 fn default_feather() -> f64 {
     DEFAULT_FEATHER
@@ -586,7 +594,11 @@ impl Cutout {
             DEFAULT_FEATHER
         };
         self.expansion = self.expansion.clamp(-4096, 4096);
-        self.edge_strength = if self.edge_strength.is_finite() { self.edge_strength.clamp(0.0, 1.0) } else { 0.0 };
+        self.edge_strength = if self.edge_strength.is_finite() {
+            self.edge_strength.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         self.edge_radius = self.edge_radius.min(8);
         self.background_mode = self.background_mode.min(2);
         self.background_blur = if self.background_blur.is_finite() {

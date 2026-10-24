@@ -11,8 +11,8 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use concat_export::{ExportClip, ExportRequest, Reporter, render_on};
 pub use concat_export::ExportFormat;
+use concat_export::{ExportClip, ExportRequest, Reporter, render_on};
 pub use concat_media::{ColorRange, RateMode, VideoCodec};
 pub use concat_render::WgpuCompositor;
 

@@ -999,10 +999,15 @@ pub fn render_on(
     }
     if request.format == ExportFormat::PngSequence {
         if request.hdr || request.color_space.is_hdr() {
-            return Err("transparent PNG sequence export currently supports SDR timelines only".to_owned());
+            return Err(
+                "transparent PNG sequence export currently supports SDR timelines only".to_owned(),
+            );
         }
         if !transitions.is_empty() {
-            return Err("transparent PNG sequence export does not yet support packaged transitions".to_owned());
+            return Err(
+                "transparent PNG sequence export does not yet support packaged transitions"
+                    .to_owned(),
+            );
         }
         render_picture(
             request,
@@ -1345,7 +1350,9 @@ enum PictureSink {
 impl PictureSink {
     fn write_frame(&mut self, frame: &Frame) -> Result<(), String> {
         match self {
-            Self::Movie(encoder) => encoder.write_frame(frame).map_err(|error| error.to_string()),
+            Self::Movie(encoder) => encoder
+                .write_frame(frame)
+                .map_err(|error| error.to_string()),
             Self::PngSequence(sequence) => sequence.write_frame(frame),
         }
     }
@@ -1408,7 +1415,9 @@ fn render_picture(
     } = build_timeline(request, rate, visible, transitions);
 
     if request.format == ExportFormat::PngSequence && !transitions.is_empty() {
-        return Err("transparent PNG sequence export does not yet support packaged transitions".to_owned());
+        return Err(
+            "transparent PNG sequence export does not yet support packaged transitions".to_owned(),
+        );
     }
 
     let options = EncodeOptions {
@@ -1729,9 +1738,9 @@ fn composite_treated_with_alpha(
         plan.treatments.clear();
     }
     if preserve_alpha {
-        compositor
-            .render_alpha(&plan)
-            .ok_or_else(|| "the compositor cannot preserve alpha for PNG sequence output".to_owned())
+        compositor.render_alpha(&plan).ok_or_else(|| {
+            "the compositor cannot preserve alpha for PNG sequence output".to_owned()
+        })
     } else {
         Ok(compositor.render(&plan))
     }
@@ -1771,7 +1780,10 @@ impl PngSequenceWriter {
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent).map_err(|error| {
-            format!("could not create PNG sequence parent {}: {error}", parent.display())
+            format!(
+                "could not create PNG sequence parent {}: {error}",
+                parent.display()
+            )
         })?;
         let name = destination
             .file_name()
@@ -1910,7 +1922,6 @@ fn remove_any(path: &Path) -> std::io::Result<()> {
         std::fs::remove_file(path)
     }
 }
-
 
 /// The two pictures a packaged transition combines: the outgoing stack,
 /// strictly below the incoming lane, and the incoming picture over that

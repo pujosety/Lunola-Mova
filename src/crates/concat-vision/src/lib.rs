@@ -53,6 +53,7 @@ pub mod segment;
 pub mod store;
 pub mod strokes;
 
+pub use apply::{Mapping, cut, cut_blur, cut_replace, highlight};
 #[cfg(feature = "infer")]
 pub use brush::{Brush, Embedding};
 #[cfg(feature = "infer")]
@@ -60,7 +61,6 @@ pub use enhance::Enhancer;
 pub use mask::Mask;
 pub use models::ModelId;
 pub use refine::{SpatialRefinement, TemporalConfig, TemporalSmoother, expand_mask, refine_mask};
-pub use apply::{Mapping, cut, cut_blur, cut_replace, highlight};
 #[cfg(feature = "infer")]
 pub use segment::Segmenter;
 pub use store::{MaskStore, mask_dir, region_dir};

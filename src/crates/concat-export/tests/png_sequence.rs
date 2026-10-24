@@ -43,7 +43,11 @@ fn read_rgba_png(path: &Path) -> (u32, u32, Vec<u8>) {
     let mut reader = decoder.read_info().expect("reads PNG header");
     let mut bytes = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut bytes).expect("decodes output PNG");
-    assert_eq!(info.color_type, png::ColorType::Rgba, "sequence must retain RGBA");
+    assert_eq!(
+        info.color_type,
+        png::ColorType::Rgba,
+        "sequence must retain RGBA"
+    );
     bytes.truncate(info.buffer_size());
     (info.width, info.height, bytes)
 }
@@ -102,7 +106,10 @@ fn decoder_preserves_alpha_of_single_row_png_sources() {
     write_rgba_png(&source, 3, 1, &expected);
     let options = DecodeOptions::default().scaled_to(3, 1).limited_to(1);
     let mut decoder = Decoder::open(&source, &options).expect("opens single-row PNG");
-    let frame = decoder.next_frame().expect("decodes PNG").expect("one frame");
+    let frame = decoder
+        .next_frame()
+        .expect("decodes PNG")
+        .expect("one frame");
     assert_eq!(frame.pixels(), expected);
     let _ = fs::remove_dir_all(root);
 }
@@ -161,7 +168,12 @@ fn cancelled_png_sequence_preserves_existing_output_and_removes_staging() {
     let staging_left = fs::read_dir(&root)
         .expect("lists parent")
         .filter_map(Result::ok)
-        .any(|entry| entry.file_name().to_string_lossy().contains("concat-sequence-"));
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .contains("concat-sequence-")
+        });
     assert!(!staging_left, "cancel cleans the staging directory");
     let _ = fs::remove_dir_all(&root);
 }
@@ -173,8 +185,8 @@ fn png_sequence_exports_numbered_rgba_frames_with_transparent_and_partial_alpha(
     let source = root.join("source.png");
     let output = root.join("alpha-sequence");
     let source_pixels = [
-        190, 40, 90, 0, 40, 120, 220, 128, 15, 210, 70, 255, 190, 40, 90, 0,
-        190, 40, 90, 0, 40, 120, 220, 128, 15, 210, 70, 255, 190, 40, 90, 0,
+        190, 40, 90, 0, 40, 120, 220, 128, 15, 210, 70, 255, 190, 40, 90, 0, 190, 40, 90, 0, 40,
+        120, 220, 128, 15, 210, 70, 255, 190, 40, 90, 0,
     ];
     write_rgba_png(&source, 4, 2, &source_pixels);
     fs::create_dir_all(&output).expect("creates prior output directory");
@@ -219,7 +231,10 @@ fn png_sequence_exports_numbered_rgba_frames_with_transparent_and_partial_alpha(
     )
     .expect("renders the sequence");
     assert_eq!(Path::new(&result), output);
-    assert!(!old_marker.exists(), "successful overwrite replaces prior sequence");
+    assert!(
+        !old_marker.exists(),
+        "successful overwrite replaces prior sequence"
+    );
 
     let first_path = output.join("frame_000001.png");
     let second_path = output.join("frame_000002.png");
@@ -229,7 +244,10 @@ fn png_sequence_exports_numbered_rgba_frames_with_transparent_and_partial_alpha(
     assert_eq!((width, height), (4, 2));
     for (index, pixel) in pixels.chunks_exact(4).enumerate() {
         let expected = [0u8, 128, 255, 0][index % 4];
-        assert!(pixel[3].abs_diff(expected) <= 1, "alpha at {index}: {pixel:?}");
+        assert!(
+            pixel[3].abs_diff(expected) <= 1,
+            "alpha at {index}: {pixel:?}"
+        );
     }
     let (second_width, second_height, second_pixels) = read_rgba_png(&second_path);
     assert_eq!((second_width, second_height), (4, 2));

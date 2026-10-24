@@ -198,14 +198,19 @@ fn blur_rows(source: &mut Frame, out: &mut Frame, width: usize, height: usize, r
         for offset in 0..window as usize {
             let x = (offset as isize - radius as isize).clamp(0, width as isize - 1) as usize;
             let idx = row_start + x * BYTES_PER_PIXEL;
-            for c in 0..3 { sums[c] += u32::from(src[idx + c]); }
+            for c in 0..3 {
+                sums[c] += u32::from(src[idx + c]);
+            }
         }
         for x in 0..width {
             let idx = row_start + x * BYTES_PER_PIXEL;
-            for c in 0..3 { dst[idx + c] = (sums[c] / window) as u8; }
+            for c in 0..3 {
+                dst[idx + c] = (sums[c] / window) as u8;
+            }
             if x + 1 < width {
                 let old_x = (x as isize - radius as isize).clamp(0, width as isize - 1) as usize;
-                let new_x = (x as isize + radius as isize + 1).clamp(0, width as isize - 1) as usize;
+                let new_x =
+                    (x as isize + radius as isize + 1).clamp(0, width as isize - 1) as usize;
                 let old_idx = row_start + old_x * BYTES_PER_PIXEL;
                 let new_idx = row_start + new_x * BYTES_PER_PIXEL;
                 for c in 0..3 {
@@ -227,14 +232,19 @@ fn blur_cols(source: &mut Frame, out: &mut Frame, width: usize, height: usize, r
         for offset in 0..window as usize {
             let y = (offset as isize - radius as isize).clamp(0, height as isize - 1) as usize;
             let idx = y * row_bytes + x * BYTES_PER_PIXEL;
-            for c in 0..3 { sums[c] += u32::from(src[idx + c]); }
+            for c in 0..3 {
+                sums[c] += u32::from(src[idx + c]);
+            }
         }
         for y in 0..height {
             let idx = y * row_bytes + x * BYTES_PER_PIXEL;
-            for c in 0..3 { dst[idx + c] = (sums[c] / window) as u8; }
+            for c in 0..3 {
+                dst[idx + c] = (sums[c] / window) as u8;
+            }
             if y + 1 < height {
                 let old_y = (y as isize - radius as isize).clamp(0, height as isize - 1) as usize;
-                let new_y = (y as isize + radius as isize + 1).clamp(0, height as isize - 1) as usize;
+                let new_y =
+                    (y as isize + radius as isize + 1).clamp(0, height as isize - 1) as usize;
                 let old_idx = old_y * row_bytes + x * BYTES_PER_PIXEL;
                 let new_idx = new_y * row_bytes + x * BYTES_PER_PIXEL;
                 for c in 0..3 {
@@ -368,11 +378,18 @@ mod tests {
     fn cut_blur_softens_background_not_foreground() {
         let mut frame = Frame::black(16, 8);
         frame.fill([200, 100, 50, 255]);
-        for y in 0..8 { for x in 8..16 { frame.set_pixel(x, y, [0, 0, 0, 255]); } }
+        for y in 0..8 {
+            for x in 8..16 {
+                frame.set_pixel(x, y, [0, 0, 0, 255]);
+            }
+        }
         cut_blur(&mut frame, &left_half_kept(), &Mapping::IDENTITY, 0.05);
         assert_eq!(frame.pixel(2, 4).unwrap(), [200, 100, 50, 255]);
         let near_edge = frame.pixel(8, 4).unwrap();
-        assert!(near_edge[0] > 0, "background edge should be softened: {near_edge:?}");
+        assert!(
+            near_edge[0] > 0,
+            "background edge should be softened: {near_edge:?}"
+        );
         assert_eq!(frame.pixel(14, 4).unwrap(), [0, 0, 0, 255]);
     }
 
@@ -398,7 +415,12 @@ mod tests {
     fn cut_replace_paints_background_with_colour() {
         let mut frame = Frame::black(16, 8);
         frame.fill([200, 100, 50, 255]);
-        cut_replace(&mut frame, &left_half_kept(), &Mapping::IDENTITY, [0, 255, 0]);
+        cut_replace(
+            &mut frame,
+            &left_half_kept(),
+            &Mapping::IDENTITY,
+            [0, 255, 0],
+        );
         // Foreground (left half) should be unchanged
         assert_eq!(frame.pixel(2, 4).unwrap(), [200, 100, 50, 255]);
         // Background (right half) should be replaced with green
@@ -413,7 +435,12 @@ mod tests {
     fn cut_replace_preserves_alpha() {
         let mut frame = Frame::black(16, 8);
         frame.fill([200, 100, 50, 128]);
-        cut_replace(&mut frame, &left_half_kept(), &Mapping::IDENTITY, [0, 0, 255]);
+        cut_replace(
+            &mut frame,
+            &left_half_kept(),
+            &Mapping::IDENTITY,
+            [0, 0, 255],
+        );
         // Alpha should be preserved
         assert_eq!(alpha(&frame, 13, 4), 128);
         assert_eq!(alpha(&frame, 2, 4), 128);

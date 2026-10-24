@@ -37,7 +37,23 @@ fn retained_cutout(clip: &Clip) -> Result<Option<Cutout>, CommandError> {
             .as_object()
             .is_some_and(|object| object.keys().all(|key| known.contains(&key.as_str())))
     };
-    if clip.cutout.is_some() || !valid_keys(value, &["mode", "subject", "feather", "expansion", "edge_strength", "edge_radius", "background_mode", "background_blur", "background_color", "strokes"]) {
+    if clip.cutout.is_some()
+        || !valid_keys(
+            value,
+            &[
+                "mode",
+                "subject",
+                "feather",
+                "expansion",
+                "edge_strength",
+                "edge_radius",
+                "background_mode",
+                "background_blur",
+                "background_color",
+                "strokes",
+            ],
+        )
+    {
         return Err(CommandError::InvalidRemovalMetadata);
     }
     if let Some(strokes) = value.get("strokes").and_then(serde_json::Value::as_array) {
