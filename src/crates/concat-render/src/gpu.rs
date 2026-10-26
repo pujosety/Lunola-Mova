@@ -3634,7 +3634,6 @@ impl Compositor for WgpuCompositor {
 impl WgpuCompositor {
     /// Draws into the readback target and copies it out: one submit, one
     /// wait. `None` when the device did not deliver the pixels.
-
     fn render_and_read_alpha(
         &mut self,
         width: u32,
