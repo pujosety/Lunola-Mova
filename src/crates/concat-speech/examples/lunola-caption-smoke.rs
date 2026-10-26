@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Standalone QA entry point for the unchanged Concat transcription engine.
 // Copy into concat-speech/examples only after the active build has exited.
+//! Runs a local transcription smoke test with an already-installed model.
+//! The harness never downloads model data.
 
 use std::error::Error;
 use std::path::Path;
