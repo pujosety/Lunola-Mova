@@ -1880,13 +1880,13 @@ impl PngSequenceWriter {
             None
         };
         if let Err(error) = std::fs::rename(&self.staging, &self.destination) {
-            if let Some(backup) = &backup {
-                if let Err(restore) = std::fs::rename(backup, &self.destination) {
-                    return Err(format!(
-                        "could not install PNG sequence {} ({error}) or restore prior output ({restore})",
-                        self.destination.display()
-                    ));
-                }
+            if let Some(backup) = &backup
+                && let Err(restore) = std::fs::rename(backup, &self.destination)
+            {
+                return Err(format!(
+                    "could not install PNG sequence {} ({error}) or restore prior output ({restore})",
+                    self.destination.display()
+                ));
             }
             return Err(format!(
                 "could not install PNG sequence {}: {error}",
